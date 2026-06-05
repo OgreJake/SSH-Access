@@ -1,0 +1,16 @@
+# Build output
+/bin/
+
+# Local dev secrets and CA key — never commit
+/dev/
+.env
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
