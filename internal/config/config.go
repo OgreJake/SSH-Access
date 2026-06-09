@@ -34,15 +34,27 @@ type Config struct {
 	// DatabaseURL is the PostgreSQL DSN/URL.
 	DatabaseURL string
 
+	// CA signer backend: "file" (dev) or "kms" (production, ADR-006).
+	CABackend string
+
 	// CA signer (dev file backend). In prod this is replaced by the AWS KMS
 	// backend behind signer.Authority (ADR-006).
 	CAKeyPath       string
 	CAKeyPassphrase string
 
+	// KMS CA backend settings (used when CABackend == "kms").
+	KMSKeyID  string // key id, ARN, or alias of the asymmetric signing key
+	AWSRegion string // optional; otherwise from environment / instance metadata
+
 	// Secret store (dev file backend). In prod this is KMS envelope
 	// encryption behind secrets.Store (ADR-009).
 	SecretStoreDir string
 	SecretStoreKey []byte // 32-byte AES-256 key (decoded from base64)
+
+	// Certificate issuance policy (ADR-007).
+	CertMaxTTL       time.Duration // hard cap on every certificate's lifetime
+	CertClockSkew    time.Duration // tolerance subtracted from ValidAfter
+	BrokerSourceAddr string        // if set, pin issued certs to this source address/CIDR
 
 	// ShutdownTimeout bounds graceful shutdown.
 	ShutdownTimeout time.Duration
@@ -57,6 +69,9 @@ func Load() (*Config, error) {
 		DatabaseURL:     os.Getenv("SSHBROKER_DATABASE_URL"),
 		CAKeyPath:       getenv("SSHBROKER_CA_KEY_PATH", "dev/ca_key"),
 		CAKeyPassphrase: os.Getenv("SSHBROKER_CA_KEY_PASSPHRASE"),
+		CABackend:       getenv("SSHBROKER_CA_BACKEND", "file"),
+		KMSKeyID:        os.Getenv("SSHBROKER_KMS_KEY_ID"),
+		AWSRegion:       os.Getenv("SSHBROKER_AWS_REGION"),
 		SecretStoreDir:  getenv("SSHBROKER_SECRET_STORE_DIR", "dev/secrets"),
 	}
 
@@ -74,6 +89,16 @@ func Load() (*Config, error) {
 
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("SSHBROKER_DATABASE_URL is required")
+	}
+
+	switch c.CABackend {
+	case "file":
+	case "kms":
+		if c.KMSKeyID == "" {
+			return nil, fmt.Errorf("SSHBROKER_KMS_KEY_ID is required when SSHBROKER_CA_BACKEND=kms")
+		}
+	default:
+		return nil, fmt.Errorf("invalid SSHBROKER_CA_BACKEND %q (want file|kms)", c.CABackend)
 	}
 
 	rawKey := os.Getenv("SSHBROKER_SECRET_STORE_KEY")
@@ -95,6 +120,26 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid SSHBROKER_SHUTDOWN_TIMEOUT %q: %w", timeout, err)
 	}
 	c.ShutdownTimeout = d
+
+	maxTTL := getenv("SSHBROKER_CERT_MAX_TTL", "5m")
+	c.CertMaxTTL, err = time.ParseDuration(maxTTL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SSHBROKER_CERT_MAX_TTL %q: %w", maxTTL, err)
+	}
+	if c.CertMaxTTL <= 0 {
+		return nil, fmt.Errorf("SSHBROKER_CERT_MAX_TTL must be positive")
+	}
+
+	skew := getenv("SSHBROKER_CERT_CLOCK_SKEW", "1m")
+	c.CertClockSkew, err = time.ParseDuration(skew)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SSHBROKER_CERT_CLOCK_SKEW %q: %w", skew, err)
+	}
+	if c.CertClockSkew < 0 {
+		return nil, fmt.Errorf("SSHBROKER_CERT_CLOCK_SKEW must not be negative")
+	}
+
+	c.BrokerSourceAddr = os.Getenv("SSHBROKER_BROKER_SOURCE_ADDR")
 
 	return c, nil
 }

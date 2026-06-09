@@ -6,6 +6,12 @@ GO            ?= go
 BIN           := bin/broker
 MIGRATIONS    := internal/store/migrations
 MIGRATE_DSN   ?= $(SSHBROKER_DATABASE_URL)
+PG_CONTAINER  ?= sshbroker-pg
+
+# Run golang-migrate via `go run` so no separate install / PATH setup is
+# needed. Override with `make migrate-up MIGRATE=migrate` if you have the CLI
+# installed and on your PATH.
+MIGRATE       ?= $(GO) run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1
 
 .PHONY: help
 help: ## Show this help
@@ -52,17 +58,40 @@ gen-secret-key: ## Print a fresh base64 AES-256 key for SSHBROKER_SECRET_STORE_K
 > @openssl rand -base64 32
 
 .PHONY: migrate-up
-migrate-up: ## Apply all migrations (needs golang-migrate + SSHBROKER_DATABASE_URL)
-> migrate -path $(MIGRATIONS) -database "$(MIGRATE_DSN)" up
+migrate-up: ## Apply all migrations (uses `go run` golang-migrate; needs SSHBROKER_DATABASE_URL)
+> $(MIGRATE) -path $(MIGRATIONS) -database "$(MIGRATE_DSN)" up
 
 .PHONY: migrate-down
 migrate-down: ## Roll back the last migration
-> migrate -path $(MIGRATIONS) -database "$(MIGRATE_DSN)" down 1
+> $(MIGRATE) -path $(MIGRATIONS) -database "$(MIGRATE_DSN)" down 1
+
+.PHONY: db-load
+db-load: ## Apply the schema by piping SQL into the Postgres container (no migrate CLI)
+> docker exec -i $(PG_CONTAINER) psql -U broker -d broker < $(MIGRATIONS)/0001_init.up.sql
+
+.PHONY: db-reset
+db-reset: ## Drop the schema (down migration) via the Postgres container
+> docker exec -i $(PG_CONTAINER) psql -U broker -d broker < $(MIGRATIONS)/0001_init.down.sql
 
 .PHONY: docker-up
-docker-up: ## Start local Postgres
-> docker compose up -d
+docker-up: ## Start local Postgres (compose plugin, docker-compose, or plain docker run)
+> @if docker compose version >/dev/null 2>&1; then \
+>   docker compose up -d; \
+> elif command -v docker-compose >/dev/null 2>&1; then \
+>   docker-compose up -d; \
+> else \
+>   echo "compose not found; starting a plain container named $(PG_CONTAINER)"; \
+>   docker run -d --name $(PG_CONTAINER) \
+>     -e POSTGRES_USER=broker -e POSTGRES_PASSWORD=broker -e POSTGRES_DB=broker \
+>     -p 127.0.0.1:5432:5432 postgres:16; \
+> fi
 
 .PHONY: docker-down
 docker-down: ## Stop local Postgres
-> docker compose down
+> @if docker compose version >/dev/null 2>&1; then \
+>   docker compose down; \
+> elif command -v docker-compose >/dev/null 2>&1; then \
+>   docker-compose down; \
+> else \
+>   docker rm -f $(PG_CONTAINER); \
+> fi

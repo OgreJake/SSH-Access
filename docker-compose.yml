@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    container_name: sshbroker-pg
     environment:
       POSTGRES_USER: broker
       POSTGRES_PASSWORD: broker

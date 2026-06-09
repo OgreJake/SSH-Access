@@ -19,9 +19,11 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/yourorg/sshbroker/internal/ca"
 	"github.com/yourorg/sshbroker/internal/config"
 	"github.com/yourorg/sshbroker/internal/secrets"
 	"github.com/yourorg/sshbroker/internal/signer"
+	"github.com/yourorg/sshbroker/internal/signer/kmsca"
 	"github.com/yourorg/sshbroker/internal/store"
 )
 
@@ -45,12 +47,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// CA signer (dev: file; prod: KMS — same interface, ADR-006).
-	auth, err := signer.NewFileAuthority(cfg.CAKeyPath, cfg.CAKeyPassphrase)
+	// CA signer: dev file key, or AWS KMS in production (ADR-006). Both
+	// satisfy signer.Authority, so nothing downstream changes.
+	auth, err := newAuthority(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	logger.Info("loaded CA",
+		"backend", cfg.CABackend,
 		"fingerprint", ssh.FingerprintSHA256(auth.PublicKey()),
 		"type", auth.PublicKey().Type(),
 	)
@@ -61,6 +65,20 @@ func run() error {
 		return err
 	}
 	_ = secretStore // wired into legacy-mode connections in Phase 4.
+
+	// Certificate issuer (policy layer over the signer, ADR-007). The
+	// CounterAllocator is dev-only; a Postgres-sequence allocator replaces it
+	// when persistence lands.
+	issuer, err := ca.NewIssuer(auth, ca.NewCounterAllocator(0), cfg.CertMaxTTL,
+		ca.WithClockSkew(cfg.CertClockSkew))
+	if err != nil {
+		return err
+	}
+	_ = issuer // consumed by the SSH proxy in Phase 2.
+	logger.Info("certificate issuer ready",
+		"max_ttl", cfg.CertMaxTTL.String(),
+		"source_pin", sourcePinStatus(cfg.BrokerSourceAddr),
+	)
 
 	// Database.
 	st, err := store.New(ctx, cfg.DatabaseURL)
@@ -113,6 +131,22 @@ func newHealthServer(addr string, st *store.Store) *http.Server {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+}
+
+func newAuthority(ctx context.Context, cfg *config.Config) (signer.Authority, error) {
+	switch cfg.CABackend {
+	case "kms":
+		return kmsca.New(ctx, cfg.KMSKeyID, kmsca.WithRegion(cfg.AWSRegion))
+	default:
+		return signer.NewFileAuthority(cfg.CAKeyPath, cfg.CAKeyPassphrase)
+	}
+}
+
+func sourcePinStatus(addr string) string {
+	if addr == "" {
+		return "disabled"
+	}
+	return addr
 }
 
 func newLogger(level string) *slog.Logger {

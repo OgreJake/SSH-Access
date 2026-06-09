@@ -6,11 +6,21 @@ legacy targets), authorizes access via group-to-group grants, and records
 session activity. See [`DECISIONS.md`](./DECISIONS.md) for the architecture and
 rationale.
 
-> **Status: Phase 0 — Foundations.** This repo currently contains the project
-> skeleton: configuration, the data model and migrations, the CA-signer and
-> secret-store interfaces with their dev (file-based) backends, and a health
-> server. The SSH proxy, certificate issuance, RBAC engine, API, and web UI
-> arrive in later phases.
+> **Status: Phase 1 (+ KMS CA backend).** On top of the Phase 0 foundations,
+> the broker mints short-lived, tightly-constrained SSH user certificates
+> (`internal/ca`). The CA key can be a dev file key (`SSHBROKER_CA_BACKEND=file`)
+> or an **AWS KMS** asymmetric key that never leaves KMS
+> (`SSHBROKER_CA_BACKEND=kms`, `internal/signer/kmsca`, ADR-006). The SSH proxy
+> that uses these certs to broker connections arrives in Phase 2.
+
+## Production CA: AWS KMS
+
+Set `SSHBROKER_CA_BACKEND=kms` and `SSHBROKER_KMS_KEY_ID` to an asymmetric KMS
+key (`ECC_NIST_P256`, key usage `SIGN_VERIFY`). The broker authenticates with
+its EC2 instance role — no static credentials. The private key never leaves
+KMS: signing sends KMS the certificate digest and KMS returns the signature,
+and every call is logged to CloudTrail. The broker fetches and validates the
+public key at startup, so a missing key or insufficient permissions fails fast.
 
 ## Layout
 
@@ -18,18 +28,21 @@ rationale.
 cmd/broker/            Entry point (wiring + health server)
 internal/config/       Environment-based configuration
 internal/model/        Domain types (mirror the DB schema)
-internal/signer/       CA abstraction (Authority) + dev FileAuthority
+internal/signer/       CA key custody (Authority) + dev FileAuthority
+internal/ca/           Certificate issuance policy (Issuer) + serial allocator
 internal/secrets/      Credential store (Store) + dev FileStore
 internal/store/        PostgreSQL pool + migrations/
 ```
 
 The `signer.Authority` and `secrets.Store` interfaces are the seams where the
 production AWS KMS backends drop in later (ADR-006 / ADR-009) without touching
-callers.
+callers. `ca.Issuer` is the policy layer that decides what every certificate
+may contain (lifetime, principals, source-address pin, capabilities, audit key
+ID) regardless of which signing backend is in use.
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.24+ (the AWS SDK requires it; 1.25 recommended)
 - Docker (for local Postgres) or your own PostgreSQL 13+
 - `ssh-keygen` and `openssl` (for dev key generation)
 - Optional: [`golang-migrate`](https://github.com/golang-migrate/migrate) CLI,
@@ -41,12 +54,16 @@ callers.
 # 1. Resolve dependencies (needs normal network access to the Go module proxy)
 make tidy
 
-# 2. Start Postgres
+# 2. Start Postgres (uses the compose plugin, docker-compose, or a plain
+#    `docker run` — whichever is available; container is named sshbroker-pg)
 make docker-up
 
-# 3. Apply the schema
+# 3. Apply the schema. Either via golang-migrate (run through `go run`, no
+#    install needed) ...
 export SSHBROKER_DATABASE_URL='postgres://broker:broker@localhost:5432/broker?sslmode=disable'
 make migrate-up
+#    ... or, with no migrate tooling at all, pipe the SQL into the container:
+# make db-load
 
 # 4. Generate a dev CA key and a secret-store key
 make gen-ca
