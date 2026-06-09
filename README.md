@@ -6,12 +6,16 @@ legacy targets), authorizes access via group-to-group grants, and records
 session activity. See [`DECISIONS.md`](./DECISIONS.md) for the architecture and
 rationale.
 
-> **Status: Phase 1 (+ KMS CA backend).** On top of the Phase 0 foundations,
-> the broker mints short-lived, tightly-constrained SSH user certificates
-> (`internal/ca`). The CA key can be a dev file key (`SSHBROKER_CA_BACKEND=file`)
-> or an **AWS KMS** asymmetric key that never leaves KMS
-> (`SSHBROKER_CA_BACKEND=kms`, `internal/signer/kmsca`, ADR-006). The SSH proxy
-> that uses these certs to broker connections arrives in Phase 2.
+> **Status: Phase 2b — brokering works end to end.** The broker authenticates
+> the user, parses the requested target from the SSH username (`login+host`),
+> authorizes it against a policy (`internal/proxy`, dev backend now / DB-backed
+> in Phase 3), mints a per-session certificate, dials the target, and proxies
+> the session — with per-grant capability gating (shell/exec/sftp) and target
+> host-key verification. Still to come: session audit to the database (2e),
+> MFA, port-forward proxying, and the legacy (Mode B) path.
+
+Connect with `ssh <target-login>+<target-host>@broker -p 2222`. The broker
+identifies you by your key; the username carries the target.
 
 ## Production CA: AWS KMS
 
@@ -31,6 +35,8 @@ internal/model/        Domain types (mirror the DB schema)
 internal/signer/       CA key custody (Authority) + dev FileAuthority
 internal/ca/           Certificate issuance policy (Issuer) + serial allocator
 internal/secrets/      Credential store (Store) + dev FileStore
+internal/proxy/        SSH front door: auth, target resolution, authorization,
+                       cert minting, target dial, and session proxying
 internal/store/        PostgreSQL pool + migrations/
 ```
 

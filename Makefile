@@ -57,6 +57,11 @@ gen-ca: ## Generate a dev CA key (ECDSA P-256, matching the prod KMS key spec)
 gen-secret-key: ## Print a fresh base64 AES-256 key for SSHBROKER_SECRET_STORE_KEY
 > @openssl rand -base64 32
 
+.PHONY: gen-host-key
+gen-host-key: ## Generate the broker's SSH host key (front door identity)
+> mkdir -p dev
+> ssh-keygen -t ed25519 -f dev/host_key -C "ssh-broker-host" -N ""
+
 .PHONY: migrate-up
 migrate-up: ## Apply all migrations (uses `go run` golang-migrate; needs SSHBROKER_DATABASE_URL)
 > $(MIGRATE) -path $(MIGRATIONS) -database "$(MIGRATE_DSN)" up

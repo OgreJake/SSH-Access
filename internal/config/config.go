@@ -56,6 +56,12 @@ type Config struct {
 	CertClockSkew    time.Duration // tolerance subtracted from ValidAfter
 	BrokerSourceAddr string        // if set, pin issued certs to this source address/CIDR
 
+	// SSH front door (Phase 2). The broker terminates user SSH here.
+	SSHListenAddr       string // address the broker's SSH server listens on
+	SSHHostKeyPath      string // broker host key (generate with `make gen-host-key`)
+	AuthorizedUsersPath string // dev authorized_keys-format file of registered users
+	TargetsPath         string // dev JSON policy: targets + grants (Phase 2b)
+
 	// ShutdownTimeout bounds graceful shutdown.
 	ShutdownTimeout time.Duration
 }
@@ -140,6 +146,11 @@ func Load() (*Config, error) {
 	}
 
 	c.BrokerSourceAddr = os.Getenv("SSHBROKER_BROKER_SOURCE_ADDR")
+
+	c.SSHListenAddr = getenv("SSHBROKER_SSH_LISTEN_ADDR", ":2222")
+	c.SSHHostKeyPath = getenv("SSHBROKER_SSH_HOST_KEY_PATH", "dev/host_key")
+	c.AuthorizedUsersPath = getenv("SSHBROKER_AUTHORIZED_USERS_PATH", "dev/authorized_users")
+	c.TargetsPath = getenv("SSHBROKER_TARGETS_PATH", "dev/targets.json")
 
 	return c, nil
 }

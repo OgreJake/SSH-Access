@@ -9,7 +9,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/yourorg/sshbroker/internal/ca"
 	"github.com/yourorg/sshbroker/internal/config"
+	"github.com/yourorg/sshbroker/internal/proxy"
 	"github.com/yourorg/sshbroker/internal/secrets"
 	"github.com/yourorg/sshbroker/internal/signer"
 	"github.com/yourorg/sshbroker/internal/signer/kmsca"
@@ -74,7 +77,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	_ = issuer // consumed by the SSH proxy in Phase 2.
 	logger.Info("certificate issuer ready",
 		"max_ttl", cfg.CertMaxTTL.String(),
 		"source_pin", sourcePinStatus(cfg.BrokerSourceAddr),
@@ -87,6 +89,42 @@ func run() error {
 	}
 	defer st.Close()
 	logger.Info("connected to database")
+
+	// SSH front door (Phase 2). Authenticate, resolve+authorize the target,
+	// mint a cert, dial the target, and proxy the session.
+	authn, err := loadAuthenticator(cfg, logger)
+	if err != nil {
+		return err
+	}
+	authz, err := loadAuthorizer(cfg, logger)
+	if err != nil {
+		return err
+	}
+	sshSrv, err := proxy.New(proxy.Config{
+		HostKeyPath:      cfg.SSHHostKeyPath,
+		Authenticator:    authn,
+		Authorizer:       authz,
+		Issuer:           issuer,
+		BrokerSourceAddr: cfg.BrokerSourceAddr,
+		Logger:           logger,
+	})
+	if err != nil {
+		return err
+	}
+	sshLn, err := net.Listen("tcp", cfg.SSHListenAddr)
+	if err != nil {
+		return fmt.Errorf("ssh listen on %s: %w", cfg.SSHListenAddr, err)
+	}
+	go func() {
+		logger.Info("ssh front door listening",
+			"addr", cfg.SSHListenAddr,
+			"host_key", ssh.FingerprintSHA256(sshSrv.HostPublicKey()),
+		)
+		if err := sshSrv.Serve(ctx, sshLn); err != nil {
+			logger.Error("ssh server error", "err", err)
+			stop()
+		}
+	}()
 
 	// Health server.
 	srv := newHealthServer(cfg.HealthAddr, st)
@@ -131,6 +169,34 @@ func newHealthServer(addr string, st *store.Store) *http.Server {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+}
+
+func loadAuthenticator(cfg *config.Config, logger *slog.Logger) (proxy.Authenticator, error) {
+	authn, err := proxy.LoadAuthorizedUsers(cfg.AuthorizedUsersPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			logger.Warn("no authorized users file; starting with zero registered users",
+				"path", cfg.AuthorizedUsersPath)
+			return proxy.NewMemoryAuthenticator(), nil
+		}
+		return nil, err
+	}
+	logger.Info("loaded authorized users", "count", authn.Len(), "path", cfg.AuthorizedUsersPath)
+	return authn, nil
+}
+
+func loadAuthorizer(cfg *config.Config, logger *slog.Logger) (proxy.Authorizer, error) {
+	authz, err := proxy.LoadTargets(cfg.TargetsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			logger.Warn("no targets file; all target requests will be denied",
+				"path", cfg.TargetsPath)
+			return proxy.NewMemoryAuthorizer(), nil
+		}
+		return nil, err
+	}
+	logger.Info("loaded targets policy", "path", cfg.TargetsPath)
+	return authz, nil
 }
 
 func newAuthority(ctx context.Context, cfg *config.Config) (signer.Authority, error) {
