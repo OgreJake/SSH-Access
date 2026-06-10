@@ -101,11 +101,20 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 func (s *Server) serverConfig() *ssh.ServerConfig {
 	cfg := &ssh.ServerConfig{
 		ServerVersion: s.serverVersion,
-		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			id, err := s.auth.AuthenticatePublicKey(key)
 			if err != nil {
+				s.logger.Info("public key not registered",
+					"remote", conn.RemoteAddr().String(),
+					"request", conn.User(),
+					"offered_key", ssh.FingerprintSHA256(key),
+				)
 				return nil, ErrUnauthorized
 			}
+			s.logger.Debug("public key accepted",
+				"subject", id.Label,
+				"offered_key", ssh.FingerprintSHA256(key),
+			)
 			return &ssh.Permissions{Extensions: map[string]string{
 				"subject_type":  string(id.Subject),
 				"subject_id":    id.ID,
