@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { useAsync, Panel, AsyncBlock, fmtTime } from './common';
+import { useAsync, Panel, AsyncBlock, fmtTime, downloadFile, toCSV } from './common';
 
 export default function Audit() {
   const state = useAsync(() => api.listAudit(), []);
   const [verify, setVerify] = useState(null);
   const [verifying, setVerifying] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
 
   async function runVerify() {
     setVerifying(true);
@@ -18,6 +20,32 @@ export default function Audit() {
     }
   }
 
+  async function download(format) {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const entries = await api.exportAudit(); // full log, oldest-first
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      if (format === 'json') {
+        downloadFile(`audit-${stamp}.json`, JSON.stringify(entries, null, 2), 'application/json');
+      } else {
+        const csvText = toCSV(entries || [], [
+          { label: 'seq', get: (e) => e.seq },
+          { label: 'at', get: (e) => e.at },
+          { label: 'actor', get: (e) => e.actor },
+          { label: 'event_type', get: (e) => e.event_type },
+          { label: 'target', get: (e) => e.target },
+          { label: 'detail', get: (e) => (e.detail ? JSON.stringify(e.detail) : '') },
+        ]);
+        downloadFile(`audit-${stamp}.csv`, csvText, 'text/csv');
+      }
+    } catch (e) {
+      setExportError(e.message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <Panel
       title="Audit log"
@@ -26,12 +54,19 @@ export default function Audit() {
           <button className="btn ghost" onClick={state.reload}>
             Refresh
           </button>
+          <button className="btn ghost" disabled={exporting} onClick={() => download('csv')}>
+            Download CSV
+          </button>
+          <button className="btn ghost" disabled={exporting} onClick={() => download('json')}>
+            Download JSON
+          </button>
           <button className="btn" onClick={runVerify} disabled={verifying}>
             {verifying ? 'Verifying…' : 'Verify chain'}
           </button>
         </>
       }
     >
+      {exportError && <p className="error">Export failed: {exportError}</p>}
       {verify && (
         <p className={verify.ok ? 'notice' : 'error'}>
           {verify.ok

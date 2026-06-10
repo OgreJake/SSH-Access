@@ -78,3 +78,27 @@ export function csv(s) {
     .map((x) => x.trim())
     .filter(Boolean);
 }
+
+// downloadFile triggers a browser download of in-memory text.
+export function downloadFile(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// toCSV renders rows to CSV. columns: [{ label, get(row) }].
+export function toCSV(rows, columns) {
+  const esc = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const head = columns.map((c) => esc(c.label)).join(',');
+  const body = rows.map((r) => columns.map((c) => esc(c.get(r))).join(',')).join('\n');
+  return head + '\n' + body + '\n';
+}

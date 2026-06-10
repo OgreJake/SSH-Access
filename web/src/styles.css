@@ -234,6 +234,13 @@ textarea {
   padding: 5px 10px;
   font-size: 12.5px;
 }
+.btn.danger {
+  background: var(--off-bg);
+  color: var(--off-ink);
+}
+.btn.danger:hover {
+  background: #f7d3d1;
+}
 
 /* Pills, tags */
 .pill {

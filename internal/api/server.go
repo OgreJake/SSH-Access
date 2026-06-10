@@ -49,9 +49,12 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/servers", s.listServers)
 	mux.HandleFunc("POST /api/v1/servers", s.createServer)
+	mux.HandleFunc("PATCH /api/v1/servers/{id}", s.patchServer)
 
 	mux.HandleFunc("GET /api/v1/grants", s.listGrants)
 	mux.HandleFunc("POST /api/v1/grants", s.createGrant)
+	mux.HandleFunc("PATCH /api/v1/grants/{id}", s.patchGrant)
+	mux.HandleFunc("DELETE /api/v1/grants/{id}", s.deleteGrant)
 
 	mux.HandleFunc("POST /api/v1/user-groups", s.createUserGroup)
 	mux.HandleFunc("GET /api/v1/user-groups", s.listUserGroups)
@@ -62,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/sessions", s.listSessions)
 	mux.HandleFunc("GET /api/v1/audit", s.listAudit)
+	mux.HandleFunc("GET /api/v1/audit/export", s.exportAudit)
 	mux.HandleFunc("GET /api/v1/audit/verify", s.verifyAudit)
 
 	return s.middleware(mux)

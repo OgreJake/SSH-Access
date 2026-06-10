@@ -6,6 +6,7 @@ export default function Users() {
   const state = useAsync(() => api.listUsers(), []);
   const [notice, setNotice] = useState(null);
   const [keyFor, setKeyFor] = useState(null); // user id we're adding a key to
+  const [editing, setEditing] = useState(null); // user being edited
 
   return (
     <Panel
@@ -44,6 +45,9 @@ export default function Users() {
                 </td>
                 <td>{u.key_count}</td>
                 <td className="row-actions">
+                  <button className="btn sm" onClick={() => setEditing(editing && editing.id === u.id ? null : u)}>
+                    Edit
+                  </button>
                   <button className="btn sm" onClick={() => setKeyFor(keyFor === u.id ? null : u.id)}>
                     Add key
                   </button>
@@ -76,7 +80,81 @@ export default function Users() {
           onCancel={() => setKeyFor(null)}
         />
       )}
+
+      {editing && (
+        <EditUser
+          user={editing}
+          onSaved={() => {
+            setNotice('User updated.');
+            setEditing(null);
+            state.reload();
+          }}
+          onCancel={() => setEditing(null)}
+        />
+      )}
     </Panel>
+  );
+}
+
+function EditUser({ user, onSaved, onCancel }) {
+  const { values, set } = useForm({
+    username: user.username,
+    email: user.email || '',
+    source: user.source,
+    status: user.status,
+  });
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateUser(user.id, {
+        username: values.username,
+        email: values.email,
+        source: values.source,
+        status: values.status,
+      });
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="subform">
+      <h3>Edit user — {user.username}</h3>
+      <div className="form-row">
+        <Field label="Username">
+          <input value={values.username} onChange={set('username')} />
+        </Field>
+        <Field label="Email">
+          <input value={values.email} onChange={set('email')} />
+        </Field>
+        <Field label="Source">
+          <select value={values.source} onChange={set('source')}>
+            <option value="local">local</option>
+            <option value="entra">entra</option>
+          </select>
+        </Field>
+        <Field label="Status">
+          <select value={values.status} onChange={set('status')}>
+            <option value="active">active</option>
+            <option value="disabled">disabled</option>
+          </select>
+        </Field>
+        <button className="btn" disabled={busy || !values.username} onClick={submit}>
+          Save changes
+        </button>
+        <button className="btn ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </div>
   );
 }
 

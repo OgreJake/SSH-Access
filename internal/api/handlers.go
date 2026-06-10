@@ -66,21 +66,26 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var in struct {
-		Status string `json:"status"`
+		Username *string `json:"username"`
+		Email    *string `json:"email"`
+		Source   *string `json:"source"`
+		Status   *string `json:"status"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if in.Status != "active" && in.Status != "disabled" {
+	if in.Status != nil && *in.Status != "active" && *in.Status != "disabled" {
 		writeError(w, http.StatusBadRequest, "status must be active or disabled")
 		return
 	}
-	if err := s.store.SetUserStatus(r.Context(), id, in.Status); err != nil {
+	if err := s.store.UpdateUser(r.Context(), id, store.UpdateUserInput{
+		Username: in.Username, Email: in.Email, Source: in.Source, Status: in.Status,
+	}); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": in.Status})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 func (s *Server) addUserKey(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +168,30 @@ func (s *Server) createServer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
-// ---------- grants ----------
+func (s *Server) patchServer(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		Hostname           *string   `json:"hostname"`
+		Address            *string   `json:"address"`
+		Port               *int      `json:"port"`
+		HostKeyFingerprint *string   `json:"host_key_fingerprint"`
+		AccessMode         *string   `json:"access_mode"`
+		AllowedPrincipals  *[]string `json:"allowed_principals"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := s.store.UpdateServer(r.Context(), id, store.UpdateServerInput{
+		Hostname: in.Hostname, Address: in.Address, Port: in.Port,
+		HostKeyFingerprint: in.HostKeyFingerprint, AccessMode: in.AccessMode,
+		AllowedPrincipals: in.AllowedPrincipals,
+	}); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
 
 type grantDTO struct {
 	ID            string   `json:"id"`
@@ -177,6 +205,7 @@ type grantDTO struct {
 	Exec          bool     `json:"exec"`
 	SFTP          bool     `json:"sftp"`
 	PortForward   bool     `json:"port_forward"`
+	Recording     string   `json:"recording"`
 }
 
 func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +221,7 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 			TargetType: g.TargetType, Target: g.Target, Principals: g.Principals,
 			MaxTTLSeconds: int(g.MaxTTL / time.Second),
 			Shell:         g.Shell, Exec: g.Exec, SFTP: g.SFTP, PortForward: g.PortForward,
+			Recording: g.Recording,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -231,6 +261,45 @@ func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+func (s *Server) patchGrant(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		Principals    *[]string `json:"principals"`
+		MaxTTLSeconds *int      `json:"max_ttl_seconds"`
+		Shell         *bool     `json:"shell"`
+		Exec          *bool     `json:"exec"`
+		SFTP          *bool     `json:"sftp"`
+		PortForward   *bool     `json:"port_forward"`
+		Recording     *string   `json:"recording"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	var ttl *time.Duration
+	if in.MaxTTLSeconds != nil {
+		d := time.Duration(*in.MaxTTLSeconds) * time.Second
+		ttl = &d
+	}
+	if err := s.store.UpdateGrant(r.Context(), id, store.UpdateGrantInput{
+		Principals: in.Principals, MaxTTL: ttl,
+		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP, AllowPortForward: in.PortForward,
+		Recording: in.Recording,
+	}); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteGrant(r.Context(), r.PathValue("id")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ---------- groups ----------
@@ -357,29 +426,45 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+type auditDTO struct {
+	Seq       int64     `json:"seq"`
+	At        time.Time `json:"at"`
+	Actor     string    `json:"actor"`
+	EventType string    `json:"event_type"`
+	Target    string    `json:"target"`
+	Detail    any       `json:"detail"`
+}
+
+func mapAudit(entries []store.AuditRow) []auditDTO {
+	out := make([]auditDTO, 0, len(entries))
+	for _, e := range entries {
+		var detail any
+		if len(e.Detail) > 0 {
+			detail = e.Detail // json.RawMessage passes through as-is
+		}
+		out = append(out, auditDTO{e.Seq, e.At, e.Actor, e.EventType, e.Target, detail})
+	}
+	return out
+}
+
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.store.ListRecentAudit(r.Context(), queryLimit(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	type dto struct {
-		Seq       int64     `json:"seq"`
-		At        time.Time `json:"at"`
-		Actor     string    `json:"actor"`
-		EventType string    `json:"event_type"`
-		Target    string    `json:"target"`
-		Detail    any       `json:"detail"`
+	writeJSON(w, http.StatusOK, mapAudit(entries))
+}
+
+// exportAudit returns the full log oldest-first (chain order) for reporting.
+func (s *Server) exportAudit(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.store.AllAudit(r.Context(), 0)
+	if err != nil {
+		writeStoreError(w, err)
+		return
 	}
-	out := make([]dto, 0, len(entries))
-	for _, e := range entries {
-		var detail any
-		if len(e.Detail) > 0 {
-			detail = e.Detail // json.RawMessage passes through as-is
-		}
-		out = append(out, dto{e.Seq, e.At, e.Actor, e.EventType, e.Target, detail})
-	}
-	writeJSON(w, http.StatusOK, out)
+	w.Header().Set("Content-Disposition", `attachment; filename="audit-export.json"`)
+	writeJSON(w, http.StatusOK, mapAudit(entries))
 }
 
 func (s *Server) verifyAudit(w http.ResponseWriter, r *http.Request) {

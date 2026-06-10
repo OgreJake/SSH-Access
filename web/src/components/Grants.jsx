@@ -20,6 +20,20 @@ export default function Grants() {
     [],
   );
   const [notice, setNotice] = useState(null);
+  const [editing, setEditing] = useState(null); // grant being edited
+
+  async function remove(g) {
+    if (!window.confirm(`Remove the grant ${g.subject_type}:${g.subject} → ${g.target_type}:${g.target}?`)) {
+      return;
+    }
+    try {
+      await api.deleteGrant(g.id);
+      setNotice('Grant removed.');
+      grants.reload();
+    } catch (e) {
+      setNotice('Error: ' + e.message);
+    }
+  }
 
   return (
     <Panel
@@ -47,6 +61,7 @@ export default function Grants() {
               <th>Principals</th>
               <th>Max TTL</th>
               <th>Capabilities</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -61,12 +76,109 @@ export default function Grants() {
                 <td>{(g.principals || []).join(', ')}</td>
                 <td>{g.max_ttl_seconds}s</td>
                 <td>{capsOf(g)}</td>
+                <td className="row-actions">
+                  <button className="btn sm" onClick={() => setEditing(editing && editing.id === g.id ? null : g)}>
+                    Edit
+                  </button>
+                  <button className="btn sm danger" onClick={() => remove(g)}>
+                    Remove
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </AsyncBlock>
+
+      {editing && (
+        <EditGrant
+          grant={editing}
+          onSaved={() => {
+            setNotice('Grant updated.');
+            setEditing(null);
+            grants.reload();
+          }}
+          onCancel={() => setEditing(null)}
+        />
+      )}
     </Panel>
+  );
+}
+
+function EditGrant({ grant, onSaved, onCancel }) {
+  const [principals, setPrincipals] = useState((grant.principals || []).join(', '));
+  const [ttlMinutes, setTtlMinutes] = useState(String(Math.round((grant.max_ttl_seconds || 300) / 60)));
+  const [caps, setCaps] = useState({
+    shell: !!grant.shell,
+    exec: !!grant.exec,
+    sftp: !!grant.sftp,
+    port_forward: !!grant.port_forward,
+  });
+  const [recording, setRecording] = useState(grant.recording || 'metadata');
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateGrant(grant.id, {
+        principals: csv(principals),
+        max_ttl_seconds: Math.round((parseFloat(ttlMinutes) || 5) * 60),
+        shell: caps.shell,
+        exec: caps.exec,
+        sftp: caps.sftp,
+        port_forward: caps.port_forward,
+        recording,
+      });
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const toggle = (k) => () => setCaps((c) => ({ ...c, [k]: !c[k] }));
+
+  return (
+    <div className="subform">
+      <h3>
+        Edit grant — <span className="tag">{grant.subject_type}</span> {grant.subject} →{' '}
+        <span className="tag">{grant.target_type}</span> {grant.target}
+      </h3>
+      <p className="muted">Subject and target are fixed; remove and recreate to change them.</p>
+      <div className="form-row">
+        <Field label="Principals (logins, comma-separated)">
+          <input value={principals} onChange={(e) => setPrincipals(e.target.value)} />
+        </Field>
+        <Field label="Max TTL (minutes)">
+          <input value={ttlMinutes} onChange={(e) => setTtlMinutes(e.target.value)} style={{ width: 80 }} />
+        </Field>
+        <Field label="Recording">
+          <select value={recording} onChange={(e) => setRecording(e.target.value)}>
+            <option value="metadata">metadata</option>
+            <option value="full">full</option>
+          </select>
+        </Field>
+      </div>
+      <div className="caps">
+        {['shell', 'exec', 'sftp', 'port_forward'].map((k) => (
+          <label key={k} className="check">
+            <input type="checkbox" checked={caps[k]} onChange={toggle(k)} /> {k.replace('_', '-')}
+          </label>
+        ))}
+      </div>
+      <div className="form-row">
+        <button className="btn" disabled={busy || !principals} onClick={submit}>
+          Save changes
+        </button>
+        <button className="btn ghost" onClick={onCancel}>
+          Cancel
+        </button>
+        {error && <span className="error">{error}</span>}
+      </div>
+    </div>
   );
 }
 

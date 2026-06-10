@@ -51,15 +51,19 @@ export const api = {
 
   listUsers: () => request('GET', '/api/v1/users'),
   createUser: (b) => request('POST', '/api/v1/users', b),
+  updateUser: (id, b) => request('PATCH', `/api/v1/users/${id}`, b),
   setUserStatus: (id, status) => request('PATCH', `/api/v1/users/${id}`, { status }),
   addUserKey: (id, public_key, comment) =>
     request('POST', `/api/v1/users/${id}/keys`, { public_key, comment }),
 
   listServers: () => request('GET', '/api/v1/servers'),
   createServer: (b) => request('POST', '/api/v1/servers', b),
+  updateServer: (id, b) => request('PATCH', `/api/v1/servers/${id}`, b),
 
   listGrants: () => request('GET', '/api/v1/grants'),
   createGrant: (b) => request('POST', '/api/v1/grants', b),
+  updateGrant: (id, b) => request('PATCH', `/api/v1/grants/${id}`, b),
+  deleteGrant: (id) => request('DELETE', `/api/v1/grants/${id}`),
 
   listUserGroups: () => request('GET', '/api/v1/user-groups'),
   createUserGroup: (name) => request('POST', '/api/v1/user-groups', { name }),
@@ -73,5 +77,6 @@ export const api = {
 
   listSessions: () => request('GET', '/api/v1/sessions'),
   listAudit: () => request('GET', '/api/v1/audit'),
+  exportAudit: () => request('GET', '/api/v1/audit/export'),
   verifyAudit: () => request('GET', '/api/v1/audit/verify'),
 };
