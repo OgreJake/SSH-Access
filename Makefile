@@ -71,12 +71,18 @@ migrate-down: ## Roll back the last migration
 > $(MIGRATE) -path $(MIGRATIONS) -database "$(MIGRATE_DSN)" down 1
 
 .PHONY: db-load
-db-load: ## Apply the schema by piping SQL into the Postgres container (no migrate CLI)
-> docker exec -i $(PG_CONTAINER) psql -U broker -d broker < $(MIGRATIONS)/0001_init.up.sql
+db-load: ## Apply all migrations by piping SQL into the Postgres container (no migrate CLI)
+> @for f in $$(ls $(MIGRATIONS)/*.up.sql | sort); do \
+>   echo "applying $$f"; \
+>   docker exec -i $(PG_CONTAINER) psql -U broker -d broker -q < $$f || exit 1; \
+> done
 
 .PHONY: db-reset
-db-reset: ## Drop the schema (down migration) via the Postgres container
-> docker exec -i $(PG_CONTAINER) psql -U broker -d broker < $(MIGRATIONS)/0001_init.down.sql
+db-reset: ## Roll back all migrations (down, reverse order) via the Postgres container
+> @for f in $$(ls $(MIGRATIONS)/*.down.sql | sort -r); do \
+>   echo "reverting $$f"; \
+>   docker exec -i $(PG_CONTAINER) psql -U broker -d broker -q < $$f || exit 1; \
+> done
 
 .PHONY: docker-up
 docker-up: ## Start local Postgres (compose plugin, docker-compose, or plain docker run)

@@ -9,12 +9,14 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +40,14 @@ func main() {
 }
 
 func run() error {
+	var printCAKey bool
+	flag.BoolVar(&printCAKey, "print-ca-key", false,
+		"print the broker CA public key as a TrustedUserCAKeys line and exit")
+	var verifyAudit bool
+	flag.BoolVar(&verifyAudit, "verify-audit", false,
+		"verify the audit log hash chain and exit (non-zero on tampering)")
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -56,6 +66,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// Utility: print the CA public key (for targets' TrustedUserCAKeys) and exit.
+	if printCAKey {
+		fmt.Println(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(auth.PublicKey()))))
+		return nil
+	}
+
 	logger.Info("loaded CA",
 		"backend", cfg.CABackend,
 		"fingerprint", ssh.FingerprintSHA256(auth.PublicKey()),
@@ -90,6 +107,16 @@ func run() error {
 	defer st.Close()
 	logger.Info("connected to database")
 
+	// Utility: verify the audit hash chain and exit.
+	if verifyAudit {
+		n, vErr := st.VerifyAuditChain(ctx)
+		if vErr != nil {
+			return fmt.Errorf("audit verification FAILED after %d records: %w", n, vErr)
+		}
+		fmt.Printf("audit chain OK: %d records verified\n", n)
+		return nil
+	}
+
 	// SSH front door (Phase 2). Authenticate, resolve+authorize the target,
 	// mint a cert, dial the target, and proxy the session.
 	authn, err := loadAuthenticator(cfg, logger)
@@ -105,6 +132,7 @@ func run() error {
 		Authenticator:    authn,
 		Authorizer:       authz,
 		Issuer:           issuer,
+		Auditor:          auditAdapter{st: st, logger: logger},
 		BrokerSourceAddr: cfg.BrokerSourceAddr,
 		Logger:           logger,
 	})
@@ -183,6 +211,65 @@ func loadAuthenticator(cfg *config.Config, logger *slog.Logger) (proxy.Authentic
 	}
 	logger.Info("loaded authorized users", "count", authn.Len(), "path", cfg.AuthorizedUsersPath)
 	return authn, nil
+}
+
+// auditAdapter implements proxy.Auditor over the database store: it writes
+// session rows and appends to the hash-chained audit log.
+type auditAdapter struct {
+	st     *store.Store
+	logger *slog.Logger
+}
+
+func (a auditAdapter) StartSession(ctx context.Context, r proxy.SessionRecord) (string, error) {
+	var serial *int64
+	if r.CertSerial != 0 {
+		v := int64(r.CertSerial)
+		serial = &v
+	}
+	id, err := a.st.CreateSession(ctx, store.SessionStart{
+		SubjectType:    r.SubjectType,
+		SubjectLabel:   r.SubjectLabel,
+		ServerLabel:    r.Host,
+		LoginPrincipal: r.Login,
+		AccessMode:     r.AccessMode,
+		SourceIP:       r.SourceIP,
+		CertSerial:     serial,
+		Recording:      "metadata",
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := a.st.AppendAudit(ctx, store.AuditEvent{
+		Actor: r.SubjectLabel, EventType: "session.start", Target: r.Host,
+		Detail: map[string]string{"login": r.Login, "address": r.Address, "source_ip": r.SourceIP, "session_id": id},
+	}); err != nil {
+		a.logger.Error("append session.start audit", "err", err.Error())
+	}
+	return id, nil
+}
+
+func (a auditAdapter) EndSession(ctx context.Context, id string, o proxy.SessionOutcome) error {
+	if id == "" {
+		return nil
+	}
+	if err := a.st.EndSession(ctx, id, o.BytesIn, o.BytesOut, o.ExitStatus); err != nil {
+		return err
+	}
+	detail := map[string]string{
+		"session_id": id,
+		"bytes_in":   strconv.FormatInt(o.BytesIn, 10),
+		"bytes_out":  strconv.FormatInt(o.BytesOut, 10),
+	}
+	if o.ExitStatus != nil {
+		detail["exit_status"] = strconv.Itoa(*o.ExitStatus)
+	}
+	return a.st.AppendAudit(ctx, store.AuditEvent{Actor: "system", EventType: "session.end", Target: id, Detail: detail})
+}
+
+func (a auditAdapter) RecordEvent(ctx context.Context, e proxy.Event) {
+	if err := a.st.AppendAudit(ctx, store.AuditEvent{Actor: e.Actor, EventType: e.Type, Target: e.Target, Detail: e.Detail}); err != nil {
+		a.logger.Error("append audit", "type", e.Type, "err", err.Error())
+	}
 }
 
 func loadAuthorizer(cfg *config.Config, logger *slog.Logger) (proxy.Authorizer, error) {

@@ -69,16 +69,21 @@ func LoadTargets(path string) (*MemoryAuthorizer, error) {
 }
 
 // Authorize resolves the target and finds a grant for the identity that
-// permits the requested login.
+// permits the requested login. Denials carry a server-side reason (the client
+// still sees only a generic message).
 func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target TargetSpec) (*Decision, error) {
 	tp, ok := a.targets[target.Host]
 	if !ok {
-		return nil, ErrTargetUnauthorized
+		return nil, fmt.Errorf("%w: host %q not found in policy", ErrTargetUnauthorized, target.Host)
 	}
+	var permitted []string
+	subjectHasGrant := false
 	for _, g := range tp.Grants {
 		if g.Subject != id.Label {
 			continue
 		}
+		subjectHasGrant = true
+		permitted = append(permitted, g.Principals...)
 		if !slices.Contains(g.Principals, target.Login) {
 			continue
 		}
@@ -100,7 +105,11 @@ func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target Targ
 			AllowSFTP:  g.SFTP,
 		}, nil
 	}
-	return nil, ErrTargetUnauthorized
+	if subjectHasGrant {
+		return nil, fmt.Errorf("%w: subject %q has no grant permitting login %q on %q (permitted logins: %v)",
+			ErrTargetUnauthorized, id.Label, target.Login, target.Host, permitted)
+	}
+	return nil, fmt.Errorf("%w: no grant for subject %q on host %q", ErrTargetUnauthorized, id.Label, target.Host)
 }
 
 func parseTTL(s string) (time.Duration, error) {

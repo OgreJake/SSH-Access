@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,12 +164,17 @@ func writeTargets(t *testing.T, host, addr, hostFP, subject string, principals [
 }
 
 func startBroker(t *testing.T, auth Authenticator, authz Authorizer, iss *ca.Issuer) (*Server, string) {
+	return startBrokerWithAuditor(t, auth, authz, iss, NopAuditor)
+}
+
+func startBrokerWithAuditor(t *testing.T, auth Authenticator, authz Authorizer, iss *ca.Issuer, aud Auditor) (*Server, string) {
 	t.Helper()
 	srv, err := New(Config{
 		HostKeyPath:   genHostKey(t),
 		Authenticator: auth,
 		Authorizer:    authz,
 		Issuer:        iss,
+		Auditor:       aud,
 		Logger:        discardLogger(),
 	})
 	if err != nil {
@@ -316,6 +322,84 @@ func TestLoadAuthorizedUsers(t *testing.T) {
 	}
 	if id.Label != "bob" {
 		t.Fatalf("label = %q, want bob", id.Label)
+	}
+}
+
+type recordingAuditor struct {
+	mu      sync.Mutex
+	started []SessionRecord
+	ended   []SessionOutcome
+}
+
+func (r *recordingAuditor) StartSession(_ context.Context, rec SessionRecord) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.started = append(r.started, rec)
+	return "sess-test", nil
+}
+func (r *recordingAuditor) EndSession(_ context.Context, _ string, o SessionOutcome) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = append(r.ended, o)
+	return nil
+}
+func (r *recordingAuditor) RecordEvent(context.Context, Event) {}
+
+func (r *recordingAuditor) counts() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.started), len(r.ended)
+}
+
+func TestBrokeredSessionIsAudited(t *testing.T) {
+	iss, caPub := newIssuer(t)
+	targetAddr, targetFP := startTargetServer(t, caPub)
+	userSigner, userPub := genUserKey(t)
+	auth := NewMemoryAuthenticator()
+	auth.Add(userPub, Identity{Subject: model.SubjectUser, ID: "alice", Label: "alice"})
+	authz, _ := LoadTargets(writeTargets(t, "web01", targetAddr, targetFP, "alice", []string{"deploy"}, true, true, false))
+
+	rec := &recordingAuditor{}
+	srv, brokerAddr := startBrokerWithAuditor(t, auth, authz, iss, rec)
+
+	client := dialBroker(t, srv, brokerAddr, "deploy+web01", userSigner)
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if _, err := sess.Output("whoami"); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	_ = sess.Close()
+
+	// StartSession happens before proxying.
+	if s, _ := rec.counts(); s != 1 {
+		t.Fatalf("expected 1 StartSession, got %d", s)
+	}
+	if rec.started[0].Host != "web01" || rec.started[0].Login != "deploy" {
+		t.Fatalf("unexpected session record: %+v", rec.started[0])
+	}
+	if rec.started[0].CertSerial == 0 {
+		t.Fatal("expected a non-zero cert serial in the session record")
+	}
+
+	// EndSession happens when the connection closes.
+	_ = client.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, e := rec.counts(); e == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, e := rec.counts(); e != 1 {
+		t.Fatalf("expected 1 EndSession, got %d", e)
+	}
+	if rec.ended[0].BytesOut == 0 {
+		t.Fatal("expected non-zero bytes_out from the target's output")
+	}
+	if rec.ended[0].ExitStatus == nil || *rec.ended[0].ExitStatus != 0 {
+		t.Fatalf("expected exit status 0, got %v", rec.ended[0].ExitStatus)
 	}
 }
 

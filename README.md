@@ -6,13 +6,14 @@ legacy targets), authorizes access via group-to-group grants, and records
 session activity. See [`DECISIONS.md`](./DECISIONS.md) for the architecture and
 rationale.
 
-> **Status: Phase 2b — brokering works end to end.** The broker authenticates
-> the user, parses the requested target from the SSH username (`login+host`),
-> authorizes it against a policy (`internal/proxy`, dev backend now / DB-backed
-> in Phase 3), mints a per-session certificate, dials the target, and proxies
-> the session — with per-grant capability gating (shell/exec/sftp) and target
-> host-key verification. Still to come: session audit to the database (2e),
-> MFA, port-forward proxying, and the legacy (Mode B) path.
+> **Status: Phase 2 complete (through 2e).** The broker authenticates the
+> user, resolves `login+host`, authorizes against policy, mints a per-session
+> certificate (file or KMS CA), dials the target, and proxies the session with
+> capability gating and host-key verification. Every brokered session is now
+> recorded to PostgreSQL (`sessions`) and appended to a tamper-evident,
+> hash-chained `audit_log` (ADR-015); `broker -verify-audit` re-checks the
+> chain. Next (Phase 3): move identities and authorization policy from the dev
+> files into the database. Still deferred: MFA, port-forward proxying, Mode B.
 
 Connect with `ssh <target-login>+<target-host>@broker -p 2222`. The broker
 identifies you by your key; the username carries the target.

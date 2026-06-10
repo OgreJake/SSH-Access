@@ -21,6 +21,7 @@ type Server struct {
 	auth             Authenticator
 	authz            Authorizer
 	issuer           *ca.Issuer
+	auditor          Auditor
 	brokerSourceAddr string
 	logger           *slog.Logger
 	serverVersion    string
@@ -32,6 +33,7 @@ type Config struct {
 	Authenticator    Authenticator
 	Authorizer       Authorizer
 	Issuer           *ca.Issuer
+	Auditor          Auditor // optional; defaults to NopAuditor
 	BrokerSourceAddr string
 	Logger           *slog.Logger
 	ServerVersion    string
@@ -64,11 +66,16 @@ func New(cfg Config) (*Server, error) {
 	if version == "" {
 		version = "SSH-2.0-sshbroker"
 	}
+	auditor := cfg.Auditor
+	if auditor == nil {
+		auditor = NopAuditor
+	}
 	return &Server{
 		hostSigner:       hostSigner,
 		auth:             cfg.Authenticator,
 		authz:            cfg.Authorizer,
 		issuer:           cfg.Issuer,
+		auditor:          auditor,
 		brokerSourceAddr: cfg.BrokerSourceAddr,
 		logger:           logger,
 		serverVersion:    version,
@@ -139,35 +146,61 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 	go ssh.DiscardRequests(reqs)
 
 	id := identityFrom(sConn.Permissions)
+	sourceIP := hostOnly(remote)
 	log := s.logger.With("remote", remote, "subject", id.Label, "request", sConn.User())
 
 	// Resolve and authorize the target, then dial it. Failures are reported to
 	// the user over the first session channel rather than dropping silently.
 	var (
-		target   *ssh.Client
-		decision *Decision
-		setupErr string
+		target    *ssh.Client
+		decision  *Decision
+		setupErr  string
+		serial    uint64
+		sessionID string
 	)
 	spec, perr := ParseTarget(sConn.User())
 	switch {
 	case perr != nil:
 		setupErr = "sshbroker: " + perr.Error()
+		s.auditor.RecordEvent(ctx, Event{Actor: id.Label, Type: "session.rejected", Target: sConn.User(),
+			Detail: map[string]string{"reason": perr.Error(), "source_ip": sourceIP}})
 	default:
 		decision, err = s.authz.Authorize(ctx, id, spec)
 		if err != nil {
-			log.Info("authorization denied", "host", spec.Host, "login", spec.Login)
+			log.Info("authorization denied", "host", spec.Host, "login", spec.Login, "reason", err.Error())
 			setupErr = fmt.Sprintf("sshbroker: not authorized to reach %q as %q", spec.Host, spec.Login)
-		} else if target, err = s.connectTarget(ctx, id, spec, decision); err != nil {
+			s.auditor.RecordEvent(ctx, Event{Actor: id.Label, Type: "authz.denied", Target: spec.Host,
+				Detail: map[string]string{"login": spec.Login, "reason": err.Error(), "source_ip": sourceIP}})
+		} else if target, serial, err = s.connectTarget(ctx, id, spec, decision); err != nil {
 			log.Warn("target connection failed", "host", spec.Host, "err", err.Error())
 			setupErr = fmt.Sprintf("sshbroker: could not connect to %q", spec.Host)
+			s.auditor.RecordEvent(ctx, Event{Actor: id.Label, Type: "target.unreachable", Target: spec.Host,
+				Detail: map[string]string{"login": spec.Login, "address": decision.Address, "source_ip": sourceIP}})
 		} else {
 			log.Info("brokering session", "host", spec.Host, "login", spec.Login, "address", decision.Address)
+			sessionID, err = s.auditor.StartSession(ctx, SessionRecord{
+				SubjectType:  string(id.Subject),
+				SubjectLabel: id.Label,
+				Host:         spec.Host,
+				Address:      decision.Address,
+				Login:        spec.Login,
+				AccessMode:   "cert",
+				SourceIP:     sourceIP,
+				CertSerial:   serial,
+			})
+			if err != nil {
+				log.Error("record session start", "err", err.Error())
+			}
 		}
 	}
 	if target != nil {
 		defer target.Close()
 	}
 
+	var (
+		bytesIn, bytesOut int64
+		exit              *int
+	)
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
 			_ = nc.Reject(ssh.UnknownChannelType, "only session channels are supported")
@@ -177,25 +210,36 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 			rejectWithNotice(nc, setupErr)
 			continue
 		}
-		s.handleSession(nc, target, decision)
+		in, out, ex := s.handleSession(nc, target, decision)
+		bytesIn += in
+		bytesOut += out
+		if ex != nil {
+			exit = ex
+		}
 	}
-	log.Info("session closed")
+
+	if sessionID != "" {
+		if err := s.auditor.EndSession(ctx, sessionID, SessionOutcome{BytesIn: bytesIn, BytesOut: bytesOut, ExitStatus: exit}); err != nil {
+			log.Error("record session end", "err", err.Error())
+		}
+	}
+	log.Info("session closed", "bytes_in", bytesIn, "bytes_out", bytesOut)
 }
 
-func (s *Server) handleSession(nc ssh.NewChannel, target *ssh.Client, d *Decision) {
+func (s *Server) handleSession(nc ssh.NewChannel, target *ssh.Client, d *Decision) (int64, int64, *int) {
 	userCh, userReqs, err := nc.Accept()
 	if err != nil {
 		s.logger.Warn("accept user channel", "err", err.Error())
-		return
+		return 0, 0, nil
 	}
 	targetCh, targetReqs, err := target.OpenChannel("session", nil)
 	if err != nil {
 		_, _ = io.WriteString(userCh, "sshbroker: failed to open target session\r\n")
 		sendExitStatus(userCh, 1)
 		_ = userCh.Close()
-		return
+		return 0, 0, nil
 	}
-	s.proxySession(userCh, targetCh, userReqs, targetReqs, d)
+	return s.proxySession(userCh, targetCh, userReqs, targetReqs, d)
 }
 
 // rejectWithNotice accepts a session only to deliver a one-line error, then
@@ -238,4 +282,11 @@ func identityFrom(p *ssh.Permissions) Identity {
 
 func sendExitStatus(ch ssh.Channel, code uint32) {
 	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{code}))
+}
+
+func hostOnly(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }

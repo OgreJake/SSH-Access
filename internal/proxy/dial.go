@@ -17,19 +17,19 @@ import (
 // connectTarget mints a short-lived certificate for a per-session ephemeral
 // key and uses it to authenticate to the target as the resolved login. The
 // user's own key never touches the target leg — the broker is the client.
-func (s *Server) connectTarget(ctx context.Context, id Identity, spec TargetSpec, d *Decision) (*ssh.Client, error) {
+func (s *Server) connectTarget(ctx context.Context, id Identity, spec TargetSpec, d *Decision) (*ssh.Client, uint64, error) {
 	// Ephemeral keypair, used only for this target connection.
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("generate ephemeral key: %w", err)
+		return nil, 0, fmt.Errorf("generate ephemeral key: %w", err)
 	}
 	ephSigner, err := ssh.NewSignerFromSigner(priv)
 	if err != nil {
-		return nil, fmt.Errorf("ephemeral signer: %w", err)
+		return nil, 0, fmt.Errorf("ephemeral signer: %w", err)
 	}
 	sshPub, err := ssh.NewPublicKey(pub)
 	if err != nil {
-		return nil, fmt.Errorf("ephemeral public key: %w", err)
+		return nil, 0, fmt.Errorf("ephemeral public key: %w", err)
 	}
 
 	keyID := fmt.Sprintf("u=%s;host=%s;login=%s", id.Label, spec.Host, spec.Login)
@@ -42,12 +42,12 @@ func (s *Server) connectTarget(ctx context.Context, id Identity, spec TargetSpec
 		Permissions:   d.CertPermissions,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("issue certificate: %w", err)
+		return nil, 0, fmt.Errorf("issue certificate: %w", err)
 	}
 
 	certSigner, err := ssh.NewCertSigner(cert, ephSigner)
 	if err != nil {
-		return nil, fmt.Errorf("cert signer: %w", err)
+		return nil, 0, fmt.Errorf("cert signer: %w", err)
 	}
 
 	clientCfg := &ssh.ClientConfig{
@@ -58,9 +58,9 @@ func (s *Server) connectTarget(ctx context.Context, id Identity, spec TargetSpec
 	}
 	client, err := ssh.Dial("tcp", d.Address, clientCfg)
 	if err != nil {
-		return nil, fmt.Errorf("dial target %s: %w", d.Address, err)
+		return nil, cert.Serial, fmt.Errorf("dial target %s: %w", d.Address, err)
 	}
-	return client, nil
+	return client, cert.Serial, nil
 }
 
 // hostKeyCallback enforces a pinned target host key when one is configured. An

@@ -8,19 +8,20 @@ import (
 )
 
 // proxySession wires a user-side session channel to a target-side session
-// channel: data in both directions, request forwarding (with capability
-// gating on the user→target side), and exit-status propagation.
-func (s *Server) proxySession(user, target ssh.Channel, userReqs, targetReqs <-chan *ssh.Request, d *Decision) {
+// channel and returns the bytes proxied each way and the exit status.
+func (s *Server) proxySession(user, target ssh.Channel, userReqs, targetReqs <-chan *ssh.Request, d *Decision) (bytesIn, bytesOut int64, exit *int) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(target, user) // user stdin → target
+		n, _ := io.Copy(target, user) // user stdin → target
+		bytesIn = n
 		_ = target.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(user, target) // target stdout → user
+		n, _ := io.Copy(user, target) // target stdout → user
+		bytesOut = n
 		_ = user.CloseWrite()
 	}()
 	go func() { _, _ = io.Copy(user.Stderr(), target.Stderr()) }()
@@ -38,6 +39,13 @@ func (s *Server) proxySession(user, target ssh.Channel, userReqs, targetReqs <-c
 	go func() {
 		defer close(targetDone)
 		for r := range targetReqs {
+			if r.Type == "exit-status" {
+				var m struct{ Code uint32 }
+				if ssh.Unmarshal(r.Payload, &m) == nil {
+					c := int(m.Code)
+					exit = &c
+				}
+			}
 			ok, _ := user.SendRequest(r.Type, r.WantReply, r.Payload)
 			if r.WantReply {
 				_ = r.Reply(ok, nil)
@@ -49,6 +57,7 @@ func (s *Server) proxySession(user, target ssh.Channel, userReqs, targetReqs <-c
 	_ = target.Close()
 	<-targetDone
 	_ = user.Close()
+	return bytesIn, bytesOut, exit
 }
 
 // forwardUserRequest gates and forwards a user→target session request.
