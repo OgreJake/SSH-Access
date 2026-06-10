@@ -25,6 +25,7 @@ import (
 
 	"github.com/yourorg/sshbroker/internal/ca"
 	"github.com/yourorg/sshbroker/internal/config"
+	"github.com/yourorg/sshbroker/internal/model"
 	"github.com/yourorg/sshbroker/internal/proxy"
 	"github.com/yourorg/sshbroker/internal/secrets"
 	"github.com/yourorg/sshbroker/internal/signer"
@@ -33,6 +34,15 @@ import (
 )
 
 func main() {
+	// `broker admin <command>` is a management CLI that needs only the database,
+	// not the full broker config, so it is dispatched before run().
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		if err := runAdmin(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("startup failed", "err", err)
 		os.Exit(1)
@@ -119,11 +129,11 @@ func run() error {
 
 	// SSH front door (Phase 2). Authenticate, resolve+authorize the target,
 	// mint a cert, dial the target, and proxy the session.
-	authn, err := loadAuthenticator(cfg, logger)
+	authn, err := loadAuthenticator(cfg, st, logger)
 	if err != nil {
 		return err
 	}
-	authz, err := loadAuthorizer(cfg, logger)
+	authz, err := loadAuthorizer(cfg, st, logger)
 	if err != nil {
 		return err
 	}
@@ -199,7 +209,31 @@ func newHealthServer(addr string, st *store.Store) *http.Server {
 	}
 }
 
-func loadAuthenticator(cfg *config.Config, logger *slog.Logger) (proxy.Authenticator, error) {
+// storeKeyLookup adapts the database store to proxy.KeyLookup, translating
+// store.ErrNotFound into a nil identity (the proxy's "no such key" signal).
+type storeKeyLookup struct{ st *store.Store }
+
+func (l storeKeyLookup) AuthnByKey(ctx context.Context, line string) (*proxy.ResolvedIdentity, error) {
+	id, err := l.st.AuthnByKey(ctx, line)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &proxy.ResolvedIdentity{
+		Subject: model.SubjectType(id.SubjectType),
+		ID:      id.ID,
+		Label:   id.Label,
+		Active:  id.Active,
+	}, nil
+}
+
+func loadAuthenticator(cfg *config.Config, st *store.Store, logger *slog.Logger) (proxy.Authenticator, error) {
+	if cfg.AuthBackend == "db" {
+		logger.Info("authentication backend: db")
+		return proxy.NewDBAuthenticator(storeKeyLookup{st: st}, logger), nil
+	}
 	authn, err := proxy.LoadAuthorizedUsers(cfg.AuthorizedUsersPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -272,7 +306,58 @@ func (a auditAdapter) RecordEvent(ctx context.Context, e proxy.Event) {
 	}
 }
 
-func loadAuthorizer(cfg *config.Config, logger *slog.Logger) (proxy.Authorizer, error) {
+// storeAuthzBackend adapts the database store to proxy.AuthzBackend.
+type storeAuthzBackend struct{ st *store.Store }
+
+func (b storeAuthzBackend) ServerByHostname(ctx context.Context, hostname string) (*proxy.ResolvedServer, error) {
+	srv, err := b.st.GetServerByHostname(ctx, hostname)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &proxy.ResolvedServer{
+		ID:                 srv.ID,
+		Address:            srv.Address,
+		Port:               srv.Port,
+		HostKeyFingerprint: srv.HostKeyFingerprint,
+		AllowedPrincipals:  srv.AllowedPrincipals,
+	}, nil
+}
+
+func (b storeAuthzBackend) GroupsForUser(ctx context.Context, userID string) ([]string, error) {
+	return b.st.ListGroupsForUser(ctx, userID)
+}
+
+func (b storeAuthzBackend) GroupsForServer(ctx context.Context, serverID string) ([]string, error) {
+	return b.st.ListGroupsForServer(ctx, serverID)
+}
+
+func (b storeAuthzBackend) MatchingGrants(ctx context.Context, subjectType, subjectID string, userGroupIDs []string, serverID string, serverGroupIDs []string) ([]proxy.ResolvedGrant, error) {
+	gs, err := b.st.MatchingGrants(ctx, subjectType, subjectID, userGroupIDs, serverID, serverGroupIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proxy.ResolvedGrant, len(gs))
+	for i, g := range gs {
+		out[i] = proxy.ResolvedGrant{
+			Principals:       g.Principals,
+			MaxTTL:           g.MaxTTL,
+			AllowShell:       g.AllowShell,
+			AllowExec:        g.AllowExec,
+			AllowSFTP:        g.AllowSFTP,
+			AllowPortForward: g.AllowPortForward,
+		}
+	}
+	return out, nil
+}
+
+func loadAuthorizer(cfg *config.Config, st *store.Store, logger *slog.Logger) (proxy.Authorizer, error) {
+	if cfg.AuthzBackend == "db" {
+		logger.Info("authorization backend: db")
+		return proxy.NewDBAuthorizer(storeAuthzBackend{st: st}, logger), nil
+	}
 	authz, err := proxy.LoadTargets(cfg.TargetsPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

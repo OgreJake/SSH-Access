@@ -37,6 +37,14 @@ type Config struct {
 	// CA signer backend: "file" (dev) or "kms" (production, ADR-006).
 	CABackend string
 
+	// Identity backend for authentication: "file" (dev authorized_users) or
+	// "db" (PostgreSQL user/service-account keys, Phase 3).
+	AuthBackend string
+
+	// Authorization backend: "file" (dev targets.json) or "db" (PostgreSQL
+	// servers/groups/grants RBAC, Phase 3).
+	AuthzBackend string
+
 	// CA signer (dev file backend). In prod this is replaced by the AWS KMS
 	// backend behind signer.Authority (ADR-006).
 	CAKeyPath       string
@@ -76,6 +84,8 @@ func Load() (*Config, error) {
 		CAKeyPath:       getenv("SSHBROKER_CA_KEY_PATH", "dev/ca_key"),
 		CAKeyPassphrase: os.Getenv("SSHBROKER_CA_KEY_PASSPHRASE"),
 		CABackend:       getenv("SSHBROKER_CA_BACKEND", "file"),
+		AuthBackend:     getenv("SSHBROKER_AUTH_BACKEND", "file"),
+		AuthzBackend:    getenv("SSHBROKER_AUTHZ_BACKEND", "file"),
 		KMSKeyID:        os.Getenv("SSHBROKER_KMS_KEY_ID"),
 		AWSRegion:       os.Getenv("SSHBROKER_AWS_REGION"),
 		SecretStoreDir:  getenv("SSHBROKER_SECRET_STORE_DIR", "dev/secrets"),
@@ -105,6 +115,18 @@ func Load() (*Config, error) {
 		}
 	default:
 		return nil, fmt.Errorf("invalid SSHBROKER_CA_BACKEND %q (want file|kms)", c.CABackend)
+	}
+
+	switch c.AuthBackend {
+	case "file", "db":
+	default:
+		return nil, fmt.Errorf("invalid SSHBROKER_AUTH_BACKEND %q (want file|db)", c.AuthBackend)
+	}
+
+	switch c.AuthzBackend {
+	case "file", "db":
+	default:
+		return nil, fmt.Errorf("invalid SSHBROKER_AUTHZ_BACKEND %q (want file|db)", c.AuthzBackend)
 	}
 
 	rawKey := os.Getenv("SSHBROKER_SECRET_STORE_KEY")

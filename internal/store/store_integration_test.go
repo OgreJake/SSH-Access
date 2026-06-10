@@ -21,7 +21,11 @@ func testStore(t *testing.T) *Store {
 	t.Cleanup(st.Close)
 	// Clean slate (TRUNCATE does not fire the append-only row trigger).
 	_, err = st.Pool.Exec(context.Background(),
-		"TRUNCATE audit_log, sessions RESTART IDENTITY CASCADE")
+		`TRUNCATE audit_log, sessions, grants,
+		          user_group_members, server_group_members,
+		          user_groups, server_groups,
+		          user_public_keys, service_accounts, servers, users
+		 RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

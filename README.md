@@ -12,8 +12,14 @@ rationale.
 > capability gating and host-key verification. Every brokered session is now
 > recorded to PostgreSQL (`sessions`) and appended to a tamper-evident,
 > hash-chained `audit_log` (ADR-015); `broker -verify-audit` re-checks the
-> chain. Next (Phase 3): move identities and authorization policy from the dev
-> files into the database. Still deferred: MFA, port-forward proxying, Mode B.
+> chain. Authentication and authorization can now both run against the
+> database (`SSHBROKER_AUTH_BACKEND=db`, `SSHBROKER_AUTHZ_BACKEND=db`): keys
+> resolve to users (multi-key) or service accounts with disabled accounts
+> refused, and access is decided by group-to-group RBAC grants (capabilities
+> union, longest permitted TTL). The `broker admin` CLI manages these records,
+> and a separate management plane — a JSON API (`cmd/api`) plus a Vite/React
+> admin UI (`web/`) — exposes the same operations over HTTP. Still deferred:
+> a real login flow + MFA, port-forward proxying, Mode B.
 
 Connect with `ssh <target-login>+<target-host>@broker -p 2222`. The broker
 identifies you by your key; the username carries the target.
@@ -102,3 +108,27 @@ make vulncheck  # govulncheck
 - Certificates issued by this broker are short-lived and source-address-pinned
   (ADR-007); the dev backend exists only so the system is runnable end-to-end
   before the KMS wiring lands.
+
+## Managing the database (admin CLI)
+
+`broker admin` seeds and manages the records the DB backends read. It needs only
+`SSHBROKER_DATABASE_URL`. Keys are normalized to the exact form authentication
+looks up, so a key added here will resolve at connect time.
+
+```sh
+broker admin add-user            -username alice -email alice@example.com
+broker admin add-key             -user alice -key-file ~/.ssh/id_ed25519.pub -comment laptop
+broker admin add-server          -hostname web01 -address 10.0.0.5 -port 22 \
+                                  -host-key-fp SHA256:... -principals deploy,ec2-user
+broker admin create-user-group   -name deployers
+broker admin add-user-to-group   -user alice -group deployers
+broker admin create-server-group -name web-tier
+broker admin add-server-to-group -server web01 -group web-tier
+broker admin add-grant           -subject-group deployers -server-group web-tier \
+                                  -principals deploy -ttl 10m -shell -exec
+broker admin set-user-status     -username alice -status disabled
+
+broker admin list-users | list-servers | list-grants
+```
+
+Run `broker admin` with no arguments for the full command list.

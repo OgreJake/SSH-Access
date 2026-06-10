@@ -26,6 +26,11 @@ tidy: ## Resolve and pin module dependencies
 build: ## Build the broker binary
 > $(GO) build -o $(BIN) ./cmd/broker
 
+.PHONY: build-api
+build-api: ## Build the management API binary
+> $(GO) build -o bin/broker-api ./cmd/api
+
+
 .PHONY: run
 run: ## Run the broker
 > $(GO) run ./cmd/broker
