@@ -45,11 +45,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/users", s.listUsers)
 	mux.HandleFunc("POST /api/v1/users", s.createUser)
 	mux.HandleFunc("PATCH /api/v1/users/{id}", s.patchUser)
+	mux.HandleFunc("DELETE /api/v1/users/{id}", s.deleteUser)
 	mux.HandleFunc("POST /api/v1/users/{id}/keys", s.addUserKey)
 
 	mux.HandleFunc("GET /api/v1/servers", s.listServers)
 	mux.HandleFunc("POST /api/v1/servers", s.createServer)
 	mux.HandleFunc("PATCH /api/v1/servers/{id}", s.patchServer)
+	mux.HandleFunc("DELETE /api/v1/servers/{id}", s.deleteServer)
 
 	mux.HandleFunc("GET /api/v1/grants", s.listGrants)
 	mux.HandleFunc("POST /api/v1/grants", s.createGrant)

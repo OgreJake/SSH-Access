@@ -7,6 +7,23 @@ export default function Servers() {
   const [notice, setNotice] = useState(null);
   const [editing, setEditing] = useState(null);
 
+  async function remove(s) {
+    if (
+      !window.confirm(
+        `Remove server "${s.hostname}"?\n\nThis deletes its server-group memberships and any grants targeting it directly. Recorded sessions are kept (their server reference is cleared but the label remains).`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteServer(s.id);
+      setNotice(`Removed server "${s.hostname}".`);
+      state.reload();
+    } catch (e) {
+      setNotice('Error: ' + e.message);
+    }
+  }
+
   return (
     <Panel
       title="Servers"
@@ -44,6 +61,9 @@ export default function Servers() {
                 <td className="row-actions">
                   <button className="btn sm" onClick={() => setEditing(editing && editing.id === s.id ? null : s)}>
                     Edit
+                  </button>
+                  <button className="btn sm danger" onClick={() => remove(s)}>
+                    Remove
                   </button>
                 </td>
               </tr>

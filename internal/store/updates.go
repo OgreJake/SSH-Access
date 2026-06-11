@@ -154,6 +154,43 @@ func (s *Store) DeleteGrant(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteUser removes a user and its dependent rows. FK cascades drop the
+// user's public keys and group memberships; this also removes grants that
+// name the user directly as subject (the polymorphic grants table has no FK).
+// Recorded sessions are preserved (sessions.subject_id has no FK and retains
+// the subject label for the audit trail).
+func (s *Store) DeleteUser(ctx context.Context, id string) error {
+	return s.deleteWithDirectGrants(ctx, "users", "subject_type='user' AND subject_id=$1::uuid", id)
+}
+
+// DeleteServer removes a server and its dependent rows. FK cascades drop its
+// server-group memberships and SET NULL on recorded sessions (the session row
+// and its server label are preserved); this also removes grants that name the
+// server directly as target.
+func (s *Store) DeleteServer(ctx context.Context, id string) error {
+	return s.deleteWithDirectGrants(ctx, "servers", "target_type='server' AND target_id=$1::uuid", id)
+}
+
+func (s *Store) deleteWithDirectGrants(ctx context.Context, table, grantWhere, id string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "DELETE FROM grants WHERE "+grantWhere, id); err != nil {
+		return fmt.Errorf("delete dependent grants: %w", err)
+	}
+	ct, err := tx.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE id=$1::uuid", table), id)
+	if err != nil {
+		return fmt.Errorf("delete %s: %w", table, err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
+}
+
 // ---------- audit export ----------
 
 // AllAudit returns the full audit log oldest-first (for reporting/export),

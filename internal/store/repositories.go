@@ -186,6 +186,9 @@ func (s *Store) CreateServer(ctx context.Context, in CreateServerInput) (string,
 	if in.Port == 0 {
 		in.Port = 22
 	}
+	if in.AllowedPrincipals == nil {
+		in.AllowedPrincipals = []string{} // NOT NULL column; empty array, not NULL
+	}
 	var id string
 	err := s.Pool.QueryRow(ctx,
 		`INSERT INTO servers

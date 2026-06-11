@@ -8,6 +8,23 @@ export default function Users() {
   const [keyFor, setKeyFor] = useState(null); // user id we're adding a key to
   const [editing, setEditing] = useState(null); // user being edited
 
+  async function remove(u) {
+    if (
+      !window.confirm(
+        `Remove user "${u.username}"?\n\nThis deletes their public keys, group memberships, and any grants made directly to them. Recorded sessions are kept for the audit trail.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteUser(u.id);
+      setNotice(`Removed user "${u.username}".`);
+      state.reload();
+    } catch (e) {
+      setNotice('Error: ' + e.message);
+    }
+  }
+
   return (
     <Panel
       title="Users"
@@ -61,6 +78,9 @@ export default function Users() {
                     }}
                   >
                     {u.status === 'active' ? 'Disable' : 'Enable'}
+                  </button>
+                  <button className="btn sm danger" onClick={() => remove(u)}>
+                    Remove
                   </button>
                 </td>
               </tr>

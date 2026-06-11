@@ -109,6 +109,87 @@ func TestAPIUpdateAndDeleteGrant(t *testing.T) {
 	}
 }
 
+func TestAPIDeleteUser(t *testing.T) {
+	h, st := testAPI(t)
+	uid := createID(t, h, "POST", "/api/v1/users", map[string]any{"username": "alice"})
+	if rec := do(t, h, "POST", "/api/v1/users/"+uid+"/keys", testToken, map[string]any{"public_key": genKeyLine(t)}); rec.Code != http.StatusCreated {
+		t.Fatalf("add key: %d", rec.Code)
+	}
+	ugid := createID(t, h, "POST", "/api/v1/user-groups", map[string]any{"name": "deployers"})
+	if rec := do(t, h, "POST", "/api/v1/user-groups/"+ugid+"/members", testToken, map[string]any{"user_id": uid}); rec.Code != http.StatusOK {
+		t.Fatalf("add member: %d", rec.Code)
+	}
+	sid := createID(t, h, "POST", "/api/v1/servers", map[string]any{"hostname": "web01", "address": "10.0.0.5", "port": 22})
+	// A direct user→server grant that should be cleaned up on delete.
+	createID(t, h, "POST", "/api/v1/grants", map[string]any{
+		"subject_type": "user", "subject_id": uid, "target_type": "server", "target_id": sid,
+		"principals": []string{"deploy"}, "max_ttl_seconds": 300, "exec": true,
+	})
+
+	if rec := do(t, h, "DELETE", "/api/v1/users/"+uid, testToken, nil); rec.Code != http.StatusOK {
+		t.Fatalf("delete user: %d (%s)", rec.Code, rec.Body)
+	}
+	rec := do(t, h, "GET", "/api/v1/users", testToken, nil)
+	var users []userDTO
+	_ = json.Unmarshal(rec.Body.Bytes(), &users)
+	if len(users) != 0 {
+		t.Fatalf("user should be gone, got %d", len(users))
+	}
+	rec = do(t, h, "GET", "/api/v1/grants", testToken, nil)
+	var grants []grantDTO
+	_ = json.Unmarshal(rec.Body.Bytes(), &grants)
+	if len(grants) != 0 {
+		t.Fatalf("direct grant should be cleaned up, got %d", len(grants))
+	}
+	var keyCount int
+	_ = st.Pool.QueryRow(testCtx(), "SELECT count(*) FROM user_public_keys").Scan(&keyCount)
+	if keyCount != 0 {
+		t.Fatalf("keys should cascade, got %d", keyCount)
+	}
+	if rec := do(t, h, "DELETE", "/api/v1/users/"+uid, testToken, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("re-delete: %d, want 404", rec.Code)
+	}
+}
+
+func TestAPIDeleteServerPreservesSessions(t *testing.T) {
+	h, st := testAPI(t)
+	sid := createID(t, h, "POST", "/api/v1/servers", map[string]any{"hostname": "web01", "address": "10.0.0.5", "port": 22})
+
+	if _, err := st.CreateSession(testCtx(), store.SessionStart{
+		SubjectType: "user", SubjectLabel: "alice", ServerLabel: "web01",
+		LoginPrincipal: "deploy", AccessMode: "cert", SourceIP: "10.0.0.9", Recording: "metadata",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	ugid := createID(t, h, "POST", "/api/v1/user-groups", map[string]any{"name": "deployers"})
+	createID(t, h, "POST", "/api/v1/grants", map[string]any{
+		"subject_type": "user_group", "subject_id": ugid, "target_type": "server", "target_id": sid,
+		"principals": []string{"deploy"}, "max_ttl_seconds": 300, "exec": true,
+	})
+
+	if rec := do(t, h, "DELETE", "/api/v1/servers/"+sid, testToken, nil); rec.Code != http.StatusOK {
+		t.Fatalf("delete server: %d (%s)", rec.Code, rec.Body)
+	}
+	rec := do(t, h, "GET", "/api/v1/servers", testToken, nil)
+	var servers []serverDTO
+	_ = json.Unmarshal(rec.Body.Bytes(), &servers)
+	if len(servers) != 0 {
+		t.Fatalf("server should be gone, got %d", len(servers))
+	}
+	rec = do(t, h, "GET", "/api/v1/grants", testToken, nil)
+	var grants []grantDTO
+	_ = json.Unmarshal(rec.Body.Bytes(), &grants)
+	if len(grants) != 0 {
+		t.Fatalf("direct grant should be cleaned up, got %d", len(grants))
+	}
+	rec = do(t, h, "GET", "/api/v1/sessions", testToken, nil)
+	var sessions []map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &sessions)
+	if len(sessions) != 1 || sessions[0]["server"] != "web01" {
+		t.Fatalf("session should be preserved with its label, got %+v", sessions)
+	}
+}
+
 func TestAPIAuditExport(t *testing.T) {
 	h, st := testAPI(t)
 	// Seed a couple of audit entries directly via the store.

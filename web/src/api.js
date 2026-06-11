@@ -53,12 +53,14 @@ export const api = {
   createUser: (b) => request('POST', '/api/v1/users', b),
   updateUser: (id, b) => request('PATCH', `/api/v1/users/${id}`, b),
   setUserStatus: (id, status) => request('PATCH', `/api/v1/users/${id}`, { status }),
+  deleteUser: (id) => request('DELETE', `/api/v1/users/${id}`),
   addUserKey: (id, public_key, comment) =>
     request('POST', `/api/v1/users/${id}/keys`, { public_key, comment }),
 
   listServers: () => request('GET', '/api/v1/servers'),
   createServer: (b) => request('POST', '/api/v1/servers', b),
   updateServer: (id, b) => request('PATCH', `/api/v1/servers/${id}`, b),
+  deleteServer: (id) => request('DELETE', `/api/v1/servers/${id}`),
 
   listGrants: () => request('GET', '/api/v1/grants'),
   createGrant: (b) => request('POST', '/api/v1/grants', b),

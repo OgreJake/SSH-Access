@@ -112,6 +112,14 @@ func (s *Server) addUserKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteUser(r.Context(), r.PathValue("id")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // ---------- servers ----------
 
 type serverDTO struct {
@@ -191,6 +199,14 @@ func (s *Server) patchServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteServer(r.Context(), r.PathValue("id")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 type grantDTO struct {
