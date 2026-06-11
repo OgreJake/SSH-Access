@@ -32,7 +32,7 @@ func (s *Server) connectTarget(ctx context.Context, id Identity, spec TargetSpec
 		return nil, 0, fmt.Errorf("ephemeral public key: %w", err)
 	}
 
-	keyID := fmt.Sprintf("u=%s;host=%s;login=%s", id.Label, spec.Host, spec.Login)
+	keyID := fmt.Sprintf("u=%s;host=%s;login=%s", id.Label, spec.Host, d.Login)
 	cert, err := s.issuer.Issue(ctx, ca.IssueParams{
 		UserPublicKey: sshPub,
 		Principals:    d.Principals,
@@ -51,7 +51,7 @@ func (s *Server) connectTarget(ctx context.Context, id Identity, spec TargetSpec
 	}
 
 	clientCfg := &ssh.ClientConfig{
-		User:            spec.Login,
+		User:            d.Login,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(certSigner)},
 		HostKeyCallback: hostKeyCallback(d.HostKeyFingerprint, s.logger),
 		Timeout:         10 * time.Second,

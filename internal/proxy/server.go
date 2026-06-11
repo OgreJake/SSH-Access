@@ -167,23 +167,23 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 	default:
 		decision, err = s.authz.Authorize(ctx, id, spec)
 		if err != nil {
-			log.Info("authorization denied", "host", spec.Host, "login", spec.Login, "reason", err.Error())
-			setupErr = fmt.Sprintf("sshbroker: not authorized to reach %q as %q", spec.Host, spec.Login)
+			log.Info("authorization denied", "host", spec.Host, "requested", spec.RequestedLogin, "reason", err.Error())
+			setupErr = fmt.Sprintf("sshbroker: not authorized to reach %q", spec.Host)
 			s.auditor.RecordEvent(ctx, Event{Actor: id.Label, Type: "authz.denied", Target: spec.Host,
-				Detail: map[string]string{"login": spec.Login, "reason": err.Error(), "source_ip": sourceIP}})
+				Detail: map[string]string{"requested": spec.RequestedLogin, "reason": err.Error(), "source_ip": sourceIP}})
 		} else if target, serial, err = s.connectTarget(ctx, id, spec, decision); err != nil {
 			log.Warn("target connection failed", "host", spec.Host, "err", err.Error())
 			setupErr = fmt.Sprintf("sshbroker: could not connect to %q", spec.Host)
 			s.auditor.RecordEvent(ctx, Event{Actor: id.Label, Type: "target.unreachable", Target: spec.Host,
-				Detail: map[string]string{"login": spec.Login, "address": decision.Address, "source_ip": sourceIP}})
+				Detail: map[string]string{"login": decision.Login, "address": decision.Address, "source_ip": sourceIP}})
 		} else {
-			log.Info("brokering session", "host", spec.Host, "login", spec.Login, "address", decision.Address)
+			log.Info("brokering session", "host", spec.Host, "requested", spec.RequestedLogin, "login", decision.Login, "address", decision.Address)
 			sessionID, err = s.auditor.StartSession(ctx, SessionRecord{
 				SubjectType:  string(id.Subject),
 				SubjectLabel: id.Label,
 				Host:         spec.Host,
 				Address:      decision.Address,
-				Login:        spec.Login,
+				Login:        decision.Login,
 				AccessMode:   "cert",
 				SourceIP:     sourceIP,
 				CertSerial:   serial,

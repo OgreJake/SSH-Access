@@ -7,6 +7,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yourorg/sshbroker/internal/model"
@@ -96,35 +97,39 @@ func (a *DBAuthorizer) Authorize(ctx context.Context, id Identity, target Target
 		return nil, fmt.Errorf("%w: no grant for subject %q on host %q", ErrTargetUnauthorized, id.Label, target.Host)
 	}
 
-	// Defense in depth: if the server enumerates allowed logins, the requested
-	// login must be among them regardless of grants.
-	if len(server.AllowedPrincipals) > 0 && !slices.Contains(server.AllowedPrincipals, target.Login) {
-		return nil, fmt.Errorf("%w: login %q not permitted on host %q (server allowlist)",
-			ErrTargetUnauthorized, target.Login, target.Host)
+	// The principals this subject may use on this host: union of the matching
+	// grants' principals, restricted to the server's allowlist where set.
+	permitted := dedup(grantPrincipals(grants))
+	usable := permitted
+	if len(server.AllowedPrincipals) > 0 {
+		usable = intersect(permitted, server.AllowedPrincipals)
 	}
 
-	// Keep grants that permit the requested login; collect the rest for the
-	// (server-side only) denial reason.
-	var matched []ResolvedGrant
-	var permitted []string
-	for _, g := range grants {
-		permitted = append(permitted, g.Principals...)
-		if slices.Contains(g.Principals, target.Login) {
-			matched = append(matched, g)
-		}
-	}
-	if len(matched) == 0 {
-		return nil, fmt.Errorf("%w: subject %q has grants on %q but none permit login %q (permitted: %v)",
-			ErrTargetUnauthorized, id.Label, target.Host, target.Login, dedup(permitted))
+	// Resolve the effective target account (ADR-019).
+	chosen, err := a.resolvePrincipal(id, target, usable)
+	if err != nil {
+		return nil, err
 	}
 
-	// Compose: union of capabilities, longest permitted TTL.
+	// Defense in depth: the resolved account must be in the server allowlist
+	// where one is set (derivation already ensures this; explicit forms may not).
+	if len(server.AllowedPrincipals) > 0 && !slices.Contains(server.AllowedPrincipals, chosen) {
+		return nil, fmt.Errorf("%w: account %q not permitted on host %q (server allowlist)",
+			ErrTargetUnauthorized, chosen, target.Host)
+	}
+
+	// Compose over the grants that actually permit the chosen account:
+	// union of capabilities, longest permitted TTL.
 	d := &Decision{
 		Address:            net.JoinHostPort(server.Address, strconv.Itoa(serverPort(server.Port))),
 		HostKeyFingerprint: server.HostKeyFingerprint,
-		Principals:         []string{target.Login},
+		Login:              chosen,
+		Principals:         []string{chosen},
 	}
-	for _, g := range matched {
+	for _, g := range grants {
+		if !slices.Contains(g.Principals, chosen) {
+			continue
+		}
 		if g.MaxTTL > d.TTL {
 			d.TTL = g.MaxTTL
 		}
@@ -135,6 +140,58 @@ func (a *DBAuthorizer) Authorize(ctx context.Context, id Identity, target Target
 	}
 	d.CertPermissions.PTY = d.AllowShell // interactive shells need a PTY
 	return d, nil
+}
+
+// resolvePrincipal turns the requested-login token into the effective target
+// account, given the accounts usable by this subject on this host (ADR-019).
+func (a *DBAuthorizer) resolvePrincipal(id Identity, target TargetSpec, usable []string) (string, error) {
+	req := target.RequestedLogin
+
+	// Explicit: the token names an account the subject may use — honor it
+	// (backward compatible with account+host).
+	if req != "" && slices.Contains(usable, req) {
+		return req, nil
+	}
+
+	// Self-reference or bare host → derive from the usable accounts.
+	if req == "" || req == "me" || req == id.Label {
+		switch len(usable) {
+		case 1:
+			return usable[0], nil
+		case 0:
+			return "", fmt.Errorf("%w: subject %q has no usable account on host %q", ErrTargetUnauthorized, id.Label, target.Host)
+		default:
+			// Ambiguous: never guess. Tell the user how to disambiguate.
+			return "", fmt.Errorf("%w: multiple accounts available on %q for %q (%s); connect as e.g. %q",
+				ErrTargetUnauthorized, target.Host, id.Label, strings.Join(usable, ", "), usable[0]+"+"+target.Host)
+		}
+	}
+
+	// A specific account was named but it is not one the subject may use.
+	return "", fmt.Errorf("%w: subject %q may not use account %q on host %q (available: %s)",
+		ErrTargetUnauthorized, id.Label, req, target.Host, strings.Join(usable, ", "))
+}
+
+func grantPrincipals(grants []ResolvedGrant) []string {
+	var out []string
+	for _, g := range grants {
+		out = append(out, g.Principals...)
+	}
+	return out
+}
+
+func intersect(a, b []string) []string {
+	set := make(map[string]struct{}, len(b))
+	for _, x := range b {
+		set[x] = struct{}{}
+	}
+	var out []string
+	for _, x := range a {
+		if _, ok := set[x]; ok {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func serverPort(p int) int {

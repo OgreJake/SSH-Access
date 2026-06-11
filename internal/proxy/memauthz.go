@@ -69,13 +69,19 @@ func LoadTargets(path string) (*MemoryAuthorizer, error) {
 }
 
 // Authorize resolves the target and finds a grant for the identity that
-// permits the requested login. Denials carry a server-side reason (the client
-// still sees only a generic message).
+// permits the requested login. The file backend is explicit-only: it does not
+// derive accounts (ADR-019 derivation is DB-backed), so an account must be
+// given as account+host. Denials carry a server-side reason (the client still
+// sees only a generic message).
 func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target TargetSpec) (*Decision, error) {
 	tp, ok := a.targets[target.Host]
 	if !ok {
 		return nil, fmt.Errorf("%w: host %q not found in policy", ErrTargetUnauthorized, target.Host)
 	}
+	if target.RequestedLogin == "" {
+		return nil, fmt.Errorf("%w: file backend requires an explicit account (account%shost)", ErrTargetUnauthorized, targetSeparator)
+	}
+	login := target.RequestedLogin
 	var permitted []string
 	subjectHasGrant := false
 	for _, g := range tp.Grants {
@@ -84,7 +90,7 @@ func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target Targ
 		}
 		subjectHasGrant = true
 		permitted = append(permitted, g.Principals...)
-		if !slices.Contains(g.Principals, target.Login) {
+		if !slices.Contains(g.Principals, login) {
 			continue
 		}
 		ttl, err := parseTTL(g.MaxTTL)
@@ -94,7 +100,8 @@ func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target Targ
 		return &Decision{
 			Address:            tp.Address,
 			HostKeyFingerprint: tp.HostKey,
-			Principals:         []string{target.Login},
+			Login:              login,
+			Principals:         []string{login},
 			TTL:                ttl,
 			CertPermissions: ca.Permissions{
 				PTY:            g.Shell, // interactive shells need a PTY
@@ -107,7 +114,7 @@ func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target Targ
 	}
 	if subjectHasGrant {
 		return nil, fmt.Errorf("%w: subject %q has no grant permitting login %q on %q (permitted logins: %v)",
-			ErrTargetUnauthorized, id.Label, target.Login, target.Host, permitted)
+			ErrTargetUnauthorized, id.Label, login, target.Host, permitted)
 	}
 	return nil, fmt.Errorf("%w: no grant for subject %q on host %q", ErrTargetUnauthorized, id.Label, target.Host)
 }

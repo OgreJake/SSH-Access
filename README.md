@@ -16,10 +16,14 @@ rationale.
 > database (`SSHBROKER_AUTH_BACKEND=db`, `SSHBROKER_AUTHZ_BACKEND=db`): keys
 > resolve to users (multi-key) or service accounts with disabled accounts
 > refused, and access is decided by group-to-group RBAC grants (capabilities
-> union, longest permitted TTL). The `broker admin` CLI manages these records,
-> and a separate management plane — a JSON API (`cmd/api`) plus a Vite/React
-> admin UI (`web/`) — exposes the same operations over HTTP. Still deferred:
-> a real login flow + MFA, port-forward proxying, Mode B.
+> union, longest permitted TTL). Connections may be addressed as
+> `account+host` (explicit), or `host` / `you+host` to let the broker derive
+> the account from your grant (ADR-019) — so a user reaches many shared-account
+> hosts via one grant, while sessions stay attributed to the user. The
+> `broker admin` CLI manages these records, and a separate management plane — a
+> JSON API (`cmd/api`) plus a Vite/React admin UI (`web/`) — exposes the same
+> operations over HTTP. Still deferred: a real login flow + MFA, port-forward
+> proxying, Mode B.
 
 Connect with `ssh <target-login>+<target-host>@broker -p 2222`. The broker
 identifies you by your key; the username carries the target.
