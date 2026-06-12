@@ -16,9 +16,10 @@ import (
 
 // Server is the management API.
 type Server struct {
-	store  *store.Store
-	logger *slog.Logger
-	token  string
+	store        *store.Store
+	logger       *slog.Logger
+	token        string
+	recordingDir string
 }
 
 // New constructs the API server. It fails closed: an empty token is rejected
@@ -35,6 +36,10 @@ func New(st *store.Store, logger *slog.Logger, token string) (*Server, error) {
 	}
 	return &Server{store: st, logger: logger, token: token}, nil
 }
+
+// SetRecordingDir enables session-recording downloads from the given directory
+// (ADR-011). The API and broker are expected to share this filesystem path.
+func (s *Server) SetRecordingDir(dir string) { s.recordingDir = dir }
 
 // Handler builds the routed, middleware-wrapped HTTP handler.
 func (s *Server) Handler() http.Handler {
@@ -66,6 +71,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/server-groups/{id}/members", s.addServerGroupMember)
 
 	mux.HandleFunc("GET /api/v1/sessions", s.listSessions)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/terminate", s.terminateSession)
+	mux.HandleFunc("GET /api/v1/sessions/{id}/recording", s.getRecording)
 	mux.HandleFunc("GET /api/v1/audit", s.listAudit)
 	mux.HandleFunc("GET /api/v1/audit/export", s.exportAudit)
 	mux.HandleFunc("GET /api/v1/audit/verify", s.verifyAudit)

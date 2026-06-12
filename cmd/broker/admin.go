@@ -63,6 +63,8 @@ func runAdmin(args []string) error {
 		return cmdListServers(ctx, st, rest)
 	case "list-grants":
 		return cmdListGrants(ctx, st, rest)
+	case "terminate-session":
+		return cmdTerminateSession(ctx, st, rest)
 	default:
 		adminUsage()
 		return fmt.Errorf("unknown admin command %q", cmd)
@@ -88,7 +90,7 @@ Groups & RBAC:
   add-server-to-group  -server HOSTNAME -group NAME
   add-grant            (-subject-user NAME | -subject-group NAME)
                        (-server HOSTNAME | -server-group NAME)
-                       -principals a,b [-ttl 5m] [-shell] [-exec] [-sftp] [-port-forward]
+                       -principals a,b [-ttl 5m] [-shell] [-exec] [-sftp]
                        [-recording metadata|full]
 
 Inspect:
@@ -314,7 +316,6 @@ func cmdAddGrant(ctx context.Context, st *store.Store, args []string) error {
 	shell := fs.Bool("shell", false, "allow interactive shell")
 	exec := fs.Bool("exec", false, "allow exec")
 	sftp := fs.Bool("sftp", false, "allow sftp")
-	portFwd := fs.Bool("port-forward", false, "allow port forwarding")
 	recording := fs.String("recording", "metadata", "metadata|full")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -335,7 +336,7 @@ func cmdAddGrant(ctx context.Context, st *store.Store, args []string) error {
 		SubjectType: subjectType, SubjectID: subjectID,
 		TargetType: targetType, TargetID: targetID,
 		Principals: csv(*principals), MaxTTL: *ttl,
-		AllowShell: *shell, AllowExec: *exec, AllowSFTP: *sftp, AllowPortForward: *portFwd,
+		AllowShell: *shell, AllowExec: *exec, AllowSFTP: *sftp,
 		Recording: *recording,
 	})
 	if err != nil {
@@ -480,9 +481,6 @@ func caps(g store.GrantRow) string {
 	if g.SFTP {
 		c = append(c, "sftp")
 	}
-	if g.PortForward {
-		c = append(c, "port-forward")
-	}
 	if len(c) == 0 {
 		return "(none)"
 	}
@@ -508,4 +506,20 @@ func targetLabel(server, group string) string {
 		return server
 	}
 	return group
+}
+
+func cmdTerminateSession(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("terminate-session", flag.ContinueOnError)
+	id := fs.String("id", "", "session id to terminate (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == "" {
+		return errors.New("-id is required")
+	}
+	if err := st.RequestSessionTermination(ctx, *id); err != nil {
+		return err
+	}
+	fmt.Printf("flagged session %s for termination (the broker kills it on its next revocation poll)\n", *id)
+	return nil
 }

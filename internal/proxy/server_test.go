@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -128,6 +129,12 @@ func serveTarget(c net.Conn, cfg *ssh.ServerConfig) {
 					var p struct{ Command string }
 					_ = ssh.Unmarshal(r.Payload, &p)
 					_ = r.Reply(true, nil)
+					if p.Command == "block" {
+						// Hold the channel open until it is closed, so the
+						// session stays live (used to test forced termination).
+						_, _ = io.Copy(io.Discard, ch)
+						return
+					}
 					_, _ = io.WriteString(ch, "target-exec: "+p.Command+"\n")
 					_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ S uint32 }{0}))
 					return
@@ -152,7 +159,7 @@ func writeTargets(t *testing.T, host, addr, hostFP, subject string, principals [
 		"name": host, "address": addr, "host_key": hostFP,
 		"grants": []any{map[string]any{
 			"subject": subject, "principals": principals, "max_ttl": "5m",
-			"shell": shell, "exec": exec, "sftp": sftp, "port_forward": false,
+			"shell": shell, "exec": exec, "sftp": sftp,
 		}},
 	}}}
 	b, _ := json.MarshalIndent(doc, "", "  ")
@@ -410,4 +417,155 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestBrokeredSessionKill(t *testing.T) {
+	iss, caPub := newIssuer(t)
+	targetAddr, targetFP := startTargetServer(t, caPub)
+	userSigner, userPub := genUserKey(t)
+	auth := NewMemoryAuthenticator()
+	auth.Add(userPub, Identity{Subject: model.SubjectUser, ID: "alice", Label: "alice"})
+	authz, _ := LoadTargets(writeTargets(t, "web01", targetAddr, targetFP, "alice", []string{"deploy"}, true, true, false))
+	rec := &recordingAuditor{}
+	srv, brokerAddr := startBrokerWithAuditor(t, auth, authz, iss, rec)
+
+	client := dialBroker(t, srv, brokerAddr, "deploy+web01", userSigner)
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	// A command that blocks keeps the session live until forcibly closed.
+	if err := sess.Start("block"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Wait for the broker to register the live session.
+	var id string
+	for i := 0; i < 200; i++ {
+		if live := srv.LiveSessions(); len(live) == 1 {
+			id = live[0].ID
+			if live[0].SubjectLabel != "alice" {
+				t.Fatalf("live session subject = %q", live[0].SubjectLabel)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("session never registered as live")
+	}
+
+	if !srv.Kill(id) {
+		t.Fatal("Kill returned false for a live session")
+	}
+
+	// The blocked command should now return and the session should end.
+	done := make(chan error, 1)
+	go func() { done <- sess.Wait() }()
+	select {
+	case <-done: // returned (with an error) because the connection was torn down
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not end after Kill")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, e := rec.counts(); e == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, e := rec.counts(); e != 1 {
+		t.Fatalf("expected 1 EndSession after kill, got %d", e)
+	}
+	if n := len(srv.LiveSessions()); n != 0 {
+		t.Fatalf("registry should be empty after kill, has %d", n)
+	}
+}
+
+func startBrokerWithRecorder(t *testing.T, auth Authenticator, authz Authorizer, iss *ca.Issuer, aud Auditor, rec Recorder) (*Server, string) {
+	t.Helper()
+	srv, err := New(Config{
+		HostKeyPath: genHostKey(t), Authenticator: auth, Authorizer: authz,
+		Issuer: iss, Auditor: aud, Recorder: rec, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("New broker: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("broker listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+	return srv, ln.Addr().String()
+}
+
+// fixedAuthorizer returns a preset Decision (used to exercise recording without
+// standing up the DB authorizer).
+type fixedAuthorizer struct{ d *Decision }
+
+func (f fixedAuthorizer) Authorize(context.Context, Identity, TargetSpec) (*Decision, error) {
+	return f.d, nil
+}
+
+func TestBrokeredSessionRecording(t *testing.T) {
+	iss, caPub := newIssuer(t)
+	targetAddr, targetFP := startTargetServer(t, caPub)
+	userSigner, userPub := genUserKey(t)
+	auth := NewMemoryAuthenticator()
+	auth.Add(userPub, Identity{Subject: model.SubjectUser, ID: "alice", Label: "alice"})
+	authz := fixedAuthorizer{d: &Decision{
+		Address: targetAddr, HostKeyFingerprint: targetFP, Login: "deploy",
+		Principals: []string{"deploy"}, AllowExec: true, AllowShell: true,
+		Recording: "full", TTL: 2 * time.Minute,
+	}}
+	dir := t.TempDir()
+	fr, err := NewFileRecorder(dir)
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	rec := &recordingAuditor{}
+	srv, brokerAddr := startBrokerWithRecorder(t, auth, authz, iss, rec, fr)
+
+	client := dialBroker(t, srv, brokerAddr, "deploy+web01", userSigner)
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	out, err := sess.Output("whoami")
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if !strings.Contains(string(out), "target-exec: whoami") {
+		t.Fatalf("unexpected exec output: %q", out)
+	}
+	_ = client.Close() // unwinds handleConn, closing the recording
+
+	// recordingAuditor returns sessionID "sess-test" → sess-test.cast.
+	path := filepath.Join(dir, "sess-test.cast")
+	var data []byte
+	for i := 0; i < 200; i++ {
+		data, err = os.ReadFile(path)
+		if err == nil && len(data) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read recording: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var header map[string]any
+	if jerr := json.Unmarshal([]byte(lines[0]), &header); jerr != nil {
+		t.Fatalf("parse cast header: %v (line %q)", jerr, lines[0])
+	}
+	if v, _ := header["version"].(float64); v != 2 {
+		t.Fatalf("expected asciinema v2 header, got %v", header["version"])
+	}
+	if !strings.Contains(string(data), "target-exec: whoami") {
+		t.Fatalf("recording does not contain target output:\n%s", data)
+	}
 }

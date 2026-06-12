@@ -72,6 +72,14 @@ type Config struct {
 
 	// ShutdownTimeout bounds graceful shutdown.
 	ShutdownTimeout time.Duration
+
+	// RevocationInterval is how often the broker checks live sessions for
+	// termination (account disabled or explicit kill); ADR-016.
+	RevocationInterval time.Duration
+
+	// RecordingDir, when set, enables full session recording to .cast files in
+	// this directory for grants with recording policy "full" (ADR-011).
+	RecordingDir string
 }
 
 // Load reads and validates configuration from the environment.
@@ -148,6 +156,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid SSHBROKER_SHUTDOWN_TIMEOUT %q: %w", timeout, err)
 	}
 	c.ShutdownTimeout = d
+
+	revInterval := getenv("SSHBROKER_REVOCATION_INTERVAL", "10s")
+	c.RevocationInterval, err = time.ParseDuration(revInterval)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SSHBROKER_REVOCATION_INTERVAL %q: %w", revInterval, err)
+	}
+
+	c.RecordingDir = os.Getenv("SSHBROKER_RECORDING_DIR")
 
 	maxTTL := getenv("SSHBROKER_CERT_MAX_TTL", "5m")
 	c.CertMaxTTL, err = time.ParseDuration(maxTTL)

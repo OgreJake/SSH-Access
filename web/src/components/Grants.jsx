@@ -112,7 +112,6 @@ function EditGrant({ grant, onSaved, onCancel }) {
     shell: !!grant.shell,
     exec: !!grant.exec,
     sftp: !!grant.sftp,
-    port_forward: !!grant.port_forward,
   });
   const [recording, setRecording] = useState(grant.recording || 'metadata');
   const [error, setError] = useState(null);
@@ -128,7 +127,6 @@ function EditGrant({ grant, onSaved, onCancel }) {
         shell: caps.shell,
         exec: caps.exec,
         sftp: caps.sftp,
-        port_forward: caps.port_forward,
         recording,
       });
       onSaved();
@@ -163,7 +161,7 @@ function EditGrant({ grant, onSaved, onCancel }) {
         </Field>
       </div>
       <div className="caps">
-        {['shell', 'exec', 'sftp', 'port_forward'].map((k) => (
+        {['shell', 'exec', 'sftp'].map((k) => (
           <label key={k} className="check">
             <input type="checkbox" checked={caps[k]} onChange={toggle(k)} /> {k.replace('_', '-')}
           </label>
@@ -189,7 +187,7 @@ function CreateGrant({ refs, onCreated }) {
   const [targetId, setTargetId] = useState('');
   const [principals, setPrincipals] = useState('');
   const [ttlMinutes, setTtlMinutes] = useState('5');
-  const [caps, setCaps] = useState({ shell: false, exec: true, sftp: false, port_forward: false });
+  const [caps, setCaps] = useState({ shell: false, exec: true, sftp: false });
   const [recording, setRecording] = useState('metadata');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -213,7 +211,6 @@ function CreateGrant({ refs, onCreated }) {
         shell: caps.shell,
         exec: caps.exec,
         sftp: caps.sftp,
-        port_forward: caps.port_forward,
         recording,
       });
       setPrincipals('');
@@ -293,7 +290,7 @@ function CreateGrant({ refs, onCreated }) {
         </Field>
       </div>
       <div className="caps">
-        {['shell', 'exec', 'sftp', 'port_forward'].map((k) => (
+        {['shell', 'exec', 'sftp'].map((k) => (
           <label key={k} className="check">
             <input type="checkbox" checked={caps[k]} onChange={toggle(k)} /> {k.replace('_', '-')}
           </label>

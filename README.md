@@ -22,8 +22,12 @@ rationale.
 > hosts via one grant, while sessions stay attributed to the user. The
 > `broker admin` CLI manages these records, and a separate management plane — a
 > JSON API (`cmd/api`) plus a Vite/React admin UI (`web/`) — exposes the same
-> operations over HTTP. Still deferred: a real login flow + MFA, port-forward
-> proxying, Mode B.
+> operations over HTTP. Sessions can be **terminated** on demand or when an
+> account is disabled (ADR-016), and grants can opt into **full session
+> recording** to asciinema `.cast` files (ADR-011). Port forwarding has been
+> descoped (ADR-014). Still deferred: a real login flow + MFA, the KMS-backed
+> secret store, Mode B legacy credentials, grant-recertification surfacing, and
+> session timeouts/rotation/alerting.
 
 Connect with `ssh <target-login>+<target-host>@broker -p 2222`. The broker
 identifies you by your key; the username carries the target.

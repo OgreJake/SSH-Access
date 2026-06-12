@@ -45,6 +45,25 @@ async function request(method, path, body) {
   return data;
 }
 
+// requestText returns the raw response body (for file downloads like recordings).
+async function requestText(method, path) {
+  const headers = {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(path, { method, headers });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = res.statusText || 'request failed';
+    try {
+      const j = JSON.parse(text);
+      if (j && j.error) msg = j.error;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(msg, res.status);
+  }
+  return text;
+}
+
 export const api = {
   // Used to validate the token at sign-in.
   ping: () => request('GET', '/api/v1/users'),
@@ -78,6 +97,8 @@ export const api = {
     request('POST', `/api/v1/server-groups/${id}/members`, { server_id }),
 
   listSessions: () => request('GET', '/api/v1/sessions'),
+  terminateSession: (id) => request('POST', `/api/v1/sessions/${id}/terminate`),
+  downloadRecording: (id) => requestText('GET', `/api/v1/sessions/${id}/recording`),
   listAudit: () => request('GET', '/api/v1/audit'),
   exportAudit: () => request('GET', '/api/v1/audit/export'),
   verifyAudit: () => request('GET', '/api/v1/audit/verify'),

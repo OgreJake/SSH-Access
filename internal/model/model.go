@@ -118,22 +118,21 @@ type ServerGroup struct {
 
 // Grant authorizes a subject to reach a target (ADR-010).
 type Grant struct {
-	ID               string
-	SubjectType      SubjectType
-	SubjectID        string
-	TargetType       TargetType
-	TargetID         string
-	Principals       []string
-	MaxTTL           time.Duration
-	AllowShell       bool
-	AllowExec        bool
-	AllowSFTP        bool
-	AllowPortForward bool
-	Recording        RecordingPolicy
-	ReviewBy         *time.Time // SOC 2 recertification (ADR-017)
-	CreatedBy        string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID          string
+	SubjectType SubjectType
+	SubjectID   string
+	TargetType  TargetType
+	TargetID    string
+	Principals  []string
+	MaxTTL      time.Duration
+	AllowShell  bool
+	AllowExec   bool
+	AllowSFTP   bool
+	Recording   RecordingPolicy
+	ReviewBy    *time.Time // SOC 2 recertification (ADR-017)
+	CreatedBy   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Session records one brokered connection (ADR-011).

@@ -103,13 +103,12 @@ func (s *Store) UpdateServer(ctx context.Context, id string, in UpdateServerInpu
 // UpdateGrantInput holds optional mutable fields (subject/target are fixed; to
 // change those, delete and recreate the grant).
 type UpdateGrantInput struct {
-	Principals       *[]string
-	MaxTTL           *time.Duration
-	AllowShell       *bool
-	AllowExec        *bool
-	AllowSFTP        *bool
-	AllowPortForward *bool
-	Recording        *string
+	Principals *[]string
+	MaxTTL     *time.Duration
+	AllowShell *bool
+	AllowExec  *bool
+	AllowSFTP  *bool
+	Recording  *string
 }
 
 func (s *Store) UpdateGrant(ctx context.Context, id string, in UpdateGrantInput) error {
@@ -132,9 +131,6 @@ func (s *Store) UpdateGrant(ctx context.Context, id string, in UpdateGrantInput)
 	}
 	if in.AllowSFTP != nil {
 		b.add("allow_sftp=$%d", *in.AllowSFTP)
-	}
-	if in.AllowPortForward != nil {
-		b.add("allow_port_forward=$%d", *in.AllowPortForward)
 	}
 	if in.Recording != nil {
 		b.add("recording=$%d::recording_policy", *in.Recording)

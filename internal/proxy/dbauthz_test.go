@@ -43,7 +43,7 @@ func TestDBAuthorizerComposesUnionAndMaxTTL(t *testing.T) {
 		grants: []ResolvedGrant{
 			{Principals: []string{"deploy"}, MaxTTL: 2 * time.Minute, AllowExec: true},
 			{Principals: []string{"deploy"}, MaxTTL: 10 * time.Minute, AllowShell: true, AllowSFTP: true},
-			{Principals: []string{"other"}, MaxTTL: time.Hour, AllowPortForward: true}, // not for "deploy"
+			{Principals: []string{"other"}, MaxTTL: time.Hour}, // not for "deploy"
 		},
 	}
 	a := NewDBAuthorizer(be, discardLogger())
@@ -64,9 +64,6 @@ func TestDBAuthorizerComposesUnionAndMaxTTL(t *testing.T) {
 	// but NOT port-forward (that grant was for a different login).
 	if !d.AllowExec || !d.AllowShell || !d.AllowSFTP {
 		t.Fatalf("expected exec+shell+sftp union, got %+v", d)
-	}
-	if d.CertPermissions.PortForwarding {
-		t.Fatal("port-forward should not be granted (only an unrelated login had it)")
 	}
 	if !d.CertPermissions.PTY {
 		t.Fatal("PTY should follow AllowShell")
@@ -232,5 +229,33 @@ func TestDBAuthorizerDeriveNoUsableAccount(t *testing.T) {
 	a := NewDBAuthorizer(derivBackend([]string{"deploy"}, []string{"ec2-user"}), discardLogger())
 	if _, err := a.Authorize(context.Background(), userIdentity(), TargetSpec{RequestedLogin: "", Host: "web01"}); !errors.Is(err, ErrTargetUnauthorized) {
 		t.Fatalf("expected denial when no usable account, got %v", err)
+	}
+}
+
+func TestDBAuthorizerComposesRecording(t *testing.T) {
+	srv := &ResolvedServer{ID: "s1", Address: "10.0.0.5", Port: 22}
+	// Two grants for the chosen account: one metadata, one full → full wins.
+	be := &fakeAuthzBackend{server: srv, grants: []ResolvedGrant{
+		{Principals: []string{"deploy"}, MaxTTL: time.Minute, AllowExec: true, Recording: "metadata"},
+		{Principals: []string{"deploy"}, MaxTTL: time.Minute, AllowShell: true, Recording: "full"},
+	}}
+	d, err := NewDBAuthorizer(be, discardLogger()).Authorize(context.Background(), userIdentity(), TargetSpec{RequestedLogin: "deploy", Host: "web01"})
+	if err != nil {
+		t.Fatalf("authorize: %v", err)
+	}
+	if d.Recording != "full" {
+		t.Fatalf("expected full (any full wins), got %q", d.Recording)
+	}
+
+	// No grant requests full → defaults to metadata.
+	be2 := &fakeAuthzBackend{server: srv, grants: []ResolvedGrant{
+		{Principals: []string{"deploy"}, MaxTTL: time.Minute, AllowExec: true},
+	}}
+	d2, err := NewDBAuthorizer(be2, discardLogger()).Authorize(context.Background(), userIdentity(), TargetSpec{RequestedLogin: "deploy", Host: "web01"})
+	if err != nil {
+		t.Fatalf("authorize 2: %v", err)
+	}
+	if d2.Recording != "metadata" {
+		t.Fatalf("expected metadata default, got %q", d2.Recording)
 	}
 }

@@ -9,22 +9,27 @@ import (
 
 // proxySession wires a user-side session channel to a target-side session
 // channel and returns the bytes proxied each way and the exit status.
-func (s *Server) proxySession(user, target ssh.Channel, userReqs, targetReqs <-chan *ssh.Request, d *Decision) (bytesIn, bytesOut int64, exit *int) {
+func (s *Server) proxySession(user, target ssh.Channel, userReqs, targetReqs <-chan *ssh.Request, d *Decision, rec Recording) (bytesIn, bytesOut int64, exit *int) {
+	if rec == nil {
+		rec = nopRecording{}
+	}
+	out := io.MultiWriter(user, recWriter{rec})             // target stdout → user (+recording)
+	errOut := io.MultiWriter(user.Stderr(), recWriter{rec}) // target stderr → user (+recording)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(target, user) // user stdin → target
+		n, _ := io.Copy(target, user) // user stdin → target (not recorded; may contain secrets)
 		bytesIn = n
 		_ = target.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(user, target) // target stdout → user
+		n, _ := io.Copy(out, target) // target stdout → user
 		bytesOut = n
 		_ = user.CloseWrite()
 	}()
-	go func() { _, _ = io.Copy(user.Stderr(), target.Stderr()) }()
+	go func() { _, _ = io.Copy(errOut, target.Stderr()) }()
 
 	// user → target requests, gated by the grant's capabilities.
 	go func() {

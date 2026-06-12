@@ -42,7 +42,7 @@ func (b storeAuthz) MatchingGrants(ctx context.Context, st, sid string, ug []str
 	out := make([]ResolvedGrant, len(gs))
 	for i, g := range gs {
 		out[i] = ResolvedGrant{Principals: g.Principals, MaxTTL: g.MaxTTL,
-			AllowShell: g.AllowShell, AllowExec: g.AllowExec, AllowSFTP: g.AllowSFTP, AllowPortForward: g.AllowPortForward}
+			AllowShell: g.AllowShell, AllowExec: g.AllowExec, AllowSFTP: g.AllowSFTP}
 	}
 	return out, nil
 }

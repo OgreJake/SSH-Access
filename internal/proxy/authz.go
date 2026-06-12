@@ -57,6 +57,7 @@ type Decision struct {
 	Principals         []string      // principals placed in the certificate
 	TTL                time.Duration // certificate lifetime (0 = issuer max)
 	CertPermissions    ca.Permissions
+	Recording          string // session recording policy: "metadata" | "full" (ADR-011)
 
 	// Broker-side channel gating (ADR-014). Cert extensions cover what the
 	// target permits; these let the broker refuse capabilities per grant.

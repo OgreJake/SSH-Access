@@ -137,6 +137,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var recorder proxy.Recorder = proxy.NopRecorder{}
+	if cfg.RecordingDir != "" {
+		fr, ferr := proxy.NewFileRecorder(cfg.RecordingDir)
+		if ferr != nil {
+			return ferr
+		}
+		recorder = fr
+		logger.Info("full session recording enabled", "dir", cfg.RecordingDir)
+	}
+
 	sshSrv, err := proxy.New(proxy.Config{
 		HostKeyPath:      cfg.SSHHostKeyPath,
 		Authenticator:    authn,
@@ -145,6 +155,7 @@ func run() error {
 		Auditor:          auditAdapter{st: st, logger: logger},
 		BrokerSourceAddr: cfg.BrokerSourceAddr,
 		Logger:           logger,
+		Recorder:         recorder,
 	})
 	if err != nil {
 		return err
@@ -173,6 +184,10 @@ func run() error {
 			stop()
 		}
 	}()
+
+	// Revocation reaper: terminate live sessions whose subject was disabled or
+	// that were explicitly flagged for termination (ADR-016).
+	go runReaper(ctx, sshSrv, st, cfg.RevocationInterval, logger)
 
 	logger.Info("broker ready")
 	<-ctx.Done()
@@ -247,6 +262,53 @@ func loadAuthenticator(cfg *config.Config, st *store.Store, logger *slog.Logger)
 	return authn, nil
 }
 
+// runReaper periodically asks the store which of this broker's live sessions
+// must die (subject disabled or explicitly flagged) and terminates them,
+// recording a session.killed audit event for each (ADR-016).
+func runReaper(ctx context.Context, srv *proxy.Server, st *store.Store, interval time.Duration, logger *slog.Logger) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			live := srv.LiveSessions()
+			if len(live) == 0 {
+				continue
+			}
+			byID := make(map[string]proxy.SessionInfo, len(live))
+			ids := make([]string, 0, len(live))
+			for _, s := range live {
+				byID[s.ID] = s
+				ids = append(ids, s.ID)
+			}
+			qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			doomed, err := st.SessionsToTerminate(qctx, ids)
+			cancel()
+			if err != nil {
+				logger.Error("reaper query failed", "err", err)
+				continue
+			}
+			for _, id := range doomed {
+				if srv.Kill(id) {
+					info := byID[id]
+					logger.Info("session terminated", "session_id", id, "subject", info.SubjectLabel, "host", info.Host)
+					_ = st.AppendAudit(ctx, store.AuditEvent{
+						Actor:     info.SubjectLabel,
+						EventType: "session.killed",
+						Target:    info.Host,
+						Detail:    map[string]string{"session_id": id, "login": info.Login},
+					})
+				}
+			}
+		}
+	}
+}
+
 // auditAdapter implements proxy.Auditor over the database store: it writes
 // session rows and appends to the hash-chained audit log.
 type auditAdapter struct {
@@ -288,6 +350,11 @@ func (a auditAdapter) EndSession(ctx context.Context, id string, o proxy.Session
 	}
 	if err := a.st.EndSession(ctx, id, o.BytesIn, o.BytesOut, o.ExitStatus); err != nil {
 		return err
+	}
+	if o.RecordingRef != "" {
+		if err := a.st.SetSessionRecordingRef(ctx, id, o.RecordingRef); err != nil {
+			a.logger.Error("set recording ref", "session_id", id, "err", err.Error())
+		}
 	}
 	detail := map[string]string{
 		"session_id": id,
@@ -342,12 +409,12 @@ func (b storeAuthzBackend) MatchingGrants(ctx context.Context, subjectType, subj
 	out := make([]proxy.ResolvedGrant, len(gs))
 	for i, g := range gs {
 		out[i] = proxy.ResolvedGrant{
-			Principals:       g.Principals,
-			MaxTTL:           g.MaxTTL,
-			AllowShell:       g.AllowShell,
-			AllowExec:        g.AllowExec,
-			AllowSFTP:        g.AllowSFTP,
-			AllowPortForward: g.AllowPortForward,
+			Principals: g.Principals,
+			MaxTTL:     g.MaxTTL,
+			AllowShell: g.AllowShell,
+			AllowExec:  g.AllowExec,
+			AllowSFTP:  g.AllowSFTP,
+			Recording:  g.Recording,
 		}
 	}
 	return out, nil

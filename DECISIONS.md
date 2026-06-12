@@ -72,16 +72,17 @@ Each target is tagged with an **access mode**:
 
 > **Bootstrapping note:** Mode B requires the broker to already possess a privileged credential per legacy target (to inject keys or authenticate). Onboarding a legacy host therefore includes securely loading that bootstrap credential into the secret store.
 
-### ADR-014 — Proxy supports shell, exec, SFTP subsystem, and (opt-in) port forwarding
-**Status:** ACCEPTED
+### ADR-014 — Proxy supports shell, exec, and SFTP subsystem
+**Status:** ACCEPTED (revised — port forwarding descoped)
 
 The proxy is **not** shell-only. Per the Ansible/SCP/SFTP requirement it brokers:
 - **shell** (interactive PTY) — default for human sessions.
 - **exec** (single commands) — needed by Ansible and scripts.
 - **sftp subsystem** — SCP (modern OpenSSH uses SFTP underneath) and SFTP transfers.
-- **direct-tcpip (port forwarding)** — **opt-in per grant, default off** (least privilege; limits lateral movement). Enabled only where a workflow needs it.
 
 Each channel type is a capability flag on the grant. Recording adapts per channel: shell → terminal stream; exec → command + exit status; sftp → file-transfer log (path, direction, size).
+
+**Revision (port forwarding dropped).** `direct-tcpip` port forwarding was originally listed as an opt-in per-grant capability. It has been **descoped**: the per-grant flag is removed from the schema, API, CLI, and UI, and the proxy continues to reject all non-`session` channels. The low-level certificate capability (`ca.Permissions.PortForwarding`) and the `channel_type` enum value are retained but are never enabled by policy, so the feature can be reintroduced later without a model change if a concrete need arises.
 
 ---
 
@@ -156,6 +157,8 @@ TLS on the web/API; mTLS between components if/when split. **At rest:** the secr
 
 - **Always:** metadata — who, source IP, target, login principal, grant used, access mode, cert serial (Mode A), channel type, start/stop, duration, exit status, bytes, file-transfer manifest for SFTP.
 - **Opt-in per ServerGroup/grant:** full recording — terminal stream for shells, full command capture for exec, file-transfer detail for SFTP — stored encrypted on the self-hosted volume. Mandatory for Mode B2 legacy targets.
+
+**Implemented.** Full recording captures the target→user terminal stream as an asciinema v2 (`.cast`) file under `SSHBROKER_RECORDING_DIR`, one per session (`<session-id>.cast`), referenced by `sessions.recording_ref`. Policy composes across matching grants (any `full` wins). User keystrokes are deliberately **not** recorded (they can contain typed secrets). Recordings are downloadable via the API/UI and play with `asciinema play`. At-rest encryption of the recording volume remains an ops/deployment concern (ADR-009).
 
 ### ADR-015 — Tamper-evident, time-synced, retained, exportable audit log
 **Status:** ACCEPTED (SOC 2)
@@ -304,7 +307,7 @@ ansible -> ProxyJump=svc-ansible@broker -> broker authn (service-account key)
 | ADR-011 | Metadata always; full recording opt-in | ACCEPTED |
 | ADR-012 | Dual access mode (cert + legacy brokered credential) | ACCEPTED |
 | ADR-013 | First-class service accounts for automation | ACCEPTED |
-| ADR-014 | Proxy supports shell/exec/sftp/(opt-in) forwarding | ACCEPTED |
+| ADR-014 | Proxy supports shell/exec/sftp (port forwarding descoped) | ACCEPTED |
 | ADR-015 | Tamper-evident, time-synced, retained, exportable audit | ACCEPTED |
 | ADR-016 | Immediate de-provisioning + session termination | ACCEPTED |
 | ADR-017 | Access reviews / grant recertification | ACCEPTED |

@@ -16,9 +16,10 @@ type SessionRecord struct {
 
 // SessionOutcome summarizes a session at close.
 type SessionOutcome struct {
-	BytesIn    int64
-	BytesOut   int64
-	ExitStatus *int
+	BytesIn      int64
+	BytesOut     int64
+	ExitStatus   *int
+	RecordingRef string // path/key of the full recording, if any (ADR-011)
 }
 
 // Event is a one-off audit event (e.g. an authorization denial).

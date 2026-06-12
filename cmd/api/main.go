@@ -53,6 +53,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if dir := os.Getenv("SSHBROKER_RECORDING_DIR"); dir != "" {
+		apiSrv.SetRecordingDir(dir)
+		logger.Info("session-recording downloads enabled", "dir", dir)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              addr,

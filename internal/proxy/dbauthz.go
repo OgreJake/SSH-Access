@@ -24,12 +24,12 @@ type ResolvedServer struct {
 
 // ResolvedGrant is one RBAC grant applicable to a (subject, target) pair.
 type ResolvedGrant struct {
-	Principals       []string
-	MaxTTL           time.Duration
-	AllowShell       bool
-	AllowExec        bool
-	AllowSFTP        bool
-	AllowPortForward bool
+	Principals []string
+	MaxTTL     time.Duration
+	AllowShell bool
+	AllowExec  bool
+	AllowSFTP  bool
+	Recording  string // "metadata" | "full" (ADR-011)
 }
 
 // AuthzBackend supplies the data the authorizer composes a Decision from. A nil
@@ -136,7 +136,12 @@ func (a *DBAuthorizer) Authorize(ctx context.Context, id Identity, target Target
 		d.AllowShell = d.AllowShell || g.AllowShell
 		d.AllowExec = d.AllowExec || g.AllowExec
 		d.AllowSFTP = d.AllowSFTP || g.AllowSFTP
-		d.CertPermissions.PortForwarding = d.CertPermissions.PortForwarding || g.AllowPortForward
+		if g.Recording == "full" {
+			d.Recording = "full" // most-protective wins
+		}
+	}
+	if d.Recording == "" {
+		d.Recording = "metadata"
 	}
 	d.CertPermissions.PTY = d.AllowShell // interactive shells need a PTY
 	return d, nil

@@ -226,30 +226,28 @@ func (s *Store) GetServerByHostname(ctx context.Context, hostname string) (*Serv
 
 // CreateGrantInput describes an RBAC grant (subject → target, ADR-010/014).
 type CreateGrantInput struct {
-	SubjectType      string // "user" | "user_group"
-	SubjectID        string
-	TargetType       string // "server" | "server_group"
-	TargetID         string
-	Principals       []string
-	MaxTTL           time.Duration
-	AllowShell       bool
-	AllowExec        bool
-	AllowSFTP        bool
-	AllowPortForward bool
-	Recording        string // recording_policy enum
-	ReviewBy         *time.Time
+	SubjectType string // "user" | "user_group"
+	SubjectID   string
+	TargetType  string // "server" | "server_group"
+	TargetID    string
+	Principals  []string
+	MaxTTL      time.Duration
+	AllowShell  bool
+	AllowExec   bool
+	AllowSFTP   bool
+	Recording   string // recording_policy enum
+	ReviewBy    *time.Time
 }
 
 // Grant is a matched grant returned to the authorizer.
 type Grant struct {
-	ID               string
-	Principals       []string
-	MaxTTL           time.Duration
-	AllowShell       bool
-	AllowExec        bool
-	AllowSFTP        bool
-	AllowPortForward bool
-	Recording        string
+	ID         string
+	Principals []string
+	MaxTTL     time.Duration
+	AllowShell bool
+	AllowExec  bool
+	AllowSFTP  bool
+	Recording  string
 }
 
 func (s *Store) CreateGrant(ctx context.Context, in CreateGrantInput) (string, error) {
@@ -264,13 +262,13 @@ func (s *Store) CreateGrant(ctx context.Context, in CreateGrantInput) (string, e
 	err := s.Pool.QueryRow(ctx,
 		`INSERT INTO grants
 		  (subject_type, subject_id, target_type, target_id, principals, max_ttl,
-		   allow_shell, allow_exec, allow_sftp, allow_port_forward, recording, review_by)
+		   allow_shell, allow_exec, allow_sftp, recording, review_by)
 		 VALUES ($1::subject_type, $2::uuid, $3::target_type, $4::uuid,
 		         $5::text[], make_interval(secs => $6::int),
-		         $7, $8, $9, $10, $11::recording_policy, $12)
+		         $7, $8, $9, $10::recording_policy, $11)
 		 RETURNING id`,
 		in.SubjectType, in.SubjectID, in.TargetType, in.TargetID, in.Principals, secs,
-		in.AllowShell, in.AllowExec, in.AllowSFTP, in.AllowPortForward, in.Recording, in.ReviewBy).
+		in.AllowShell, in.AllowExec, in.AllowSFTP, in.Recording, in.ReviewBy).
 		Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("create grant: %w", err)
@@ -286,7 +284,7 @@ func (s *Store) CreateGrant(ctx context.Context, in CreateGrantInput) (string, e
 func (s *Store) MatchingGrants(ctx context.Context, subjectType, subjectID string, userGroupIDs []string, serverID string, serverGroupIDs []string) ([]Grant, error) {
 	const q = `
 		SELECT id::text, principals, EXTRACT(EPOCH FROM max_ttl)::bigint,
-		       allow_shell, allow_exec, allow_sftp, allow_port_forward, recording::text
+		       allow_shell, allow_exec, allow_sftp, recording::text
 		FROM grants
 		WHERE (
 		        (subject_type = $1::subject_type AND subject_id = $2::uuid)
@@ -307,7 +305,7 @@ func (s *Store) MatchingGrants(ctx context.Context, subjectType, subjectID strin
 		var g Grant
 		var secs int64
 		if err := rows.Scan(&g.ID, &g.Principals, &secs,
-			&g.AllowShell, &g.AllowExec, &g.AllowSFTP, &g.AllowPortForward, &g.Recording); err != nil {
+			&g.AllowShell, &g.AllowExec, &g.AllowSFTP, &g.Recording); err != nil {
 			return nil, fmt.Errorf("scan grant: %w", err)
 		}
 		g.MaxTTL = time.Duration(secs) * time.Second

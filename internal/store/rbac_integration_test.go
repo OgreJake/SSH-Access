@@ -133,7 +133,7 @@ func TestRBACResolution(t *testing.T) {
 	if g.MaxTTL != 5*time.Minute {
 		t.Fatalf("expected 5m TTL, got %s", g.MaxTTL)
 	}
-	if !g.AllowShell || !g.AllowExec || g.AllowSFTP || g.AllowPortForward {
+	if !g.AllowShell || !g.AllowExec || g.AllowSFTP {
 		t.Fatalf("unexpected capabilities: %+v", g)
 	}
 

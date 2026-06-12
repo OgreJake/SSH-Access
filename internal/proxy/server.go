@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -25,6 +26,8 @@ type Server struct {
 	brokerSourceAddr string
 	logger           *slog.Logger
 	serverVersion    string
+	sessions         *sessionRegistry
+	recorder         Recorder
 }
 
 // Config configures the Server.
@@ -37,6 +40,7 @@ type Config struct {
 	BrokerSourceAddr string
 	Logger           *slog.Logger
 	ServerVersion    string
+	Recorder         Recorder // optional; defaults to NopRecorder (ADR-011)
 }
 
 // New loads the host key and constructs a Server.
@@ -70,6 +74,10 @@ func New(cfg Config) (*Server, error) {
 	if auditor == nil {
 		auditor = NopAuditor
 	}
+	recorder := cfg.Recorder
+	if recorder == nil {
+		recorder = NopRecorder{}
+	}
 	return &Server{
 		hostSigner:       hostSigner,
 		auth:             cfg.Authenticator,
@@ -79,6 +87,8 @@ func New(cfg Config) (*Server, error) {
 		brokerSourceAddr: cfg.BrokerSourceAddr,
 		logger:           logger,
 		serverVersion:    version,
+		sessions:         newSessionRegistry(),
+		recorder:         recorder,
 	}, nil
 }
 
@@ -191,10 +201,42 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 			if err != nil {
 				log.Error("record session start", "err", err.Error())
 			}
+			if sessionID != "" {
+				// Register so the revocation reaper can terminate this session
+				// (ADR-016). Closing both connections unwinds the copy loops.
+				userConn, tgt := sConn, target
+				s.sessions.add(SessionInfo{
+					ID: sessionID, SubjectType: string(id.Subject), SubjectID: id.ID,
+					SubjectLabel: id.Label, Host: spec.Host, Login: decision.Login, Started: time.Now(),
+				}, func() {
+					_ = userConn.Close()
+					if tgt != nil {
+						_ = tgt.Close()
+					}
+				})
+				defer s.sessions.remove(sessionID)
+			}
 		}
 	}
 	if target != nil {
 		defer target.Close()
+	}
+
+	// Full session recording (ADR-011): opt-in per grant. Output stream only.
+	var (
+		recording    Recording = nopRecording{}
+		recordingRef string
+	)
+	if sessionID != "" && decision != nil && decision.Recording == "full" {
+		rec, ref, rerr := s.recorder.Open(sessionID, 0, 0)
+		if rerr != nil {
+			log.Error("open recording", "err", rerr.Error())
+		} else {
+			recording = rec
+			recordingRef = ref
+			defer recording.Close()
+			log.Info("recording session", "session_id", sessionID, "ref", ref)
+		}
 	}
 
 	var (
@@ -210,7 +252,7 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 			rejectWithNotice(nc, setupErr)
 			continue
 		}
-		in, out, ex := s.handleSession(nc, target, decision)
+		in, out, ex := s.handleSession(nc, target, decision, recording)
 		bytesIn += in
 		bytesOut += out
 		if ex != nil {
@@ -219,14 +261,14 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 	}
 
 	if sessionID != "" {
-		if err := s.auditor.EndSession(ctx, sessionID, SessionOutcome{BytesIn: bytesIn, BytesOut: bytesOut, ExitStatus: exit}); err != nil {
+		if err := s.auditor.EndSession(ctx, sessionID, SessionOutcome{BytesIn: bytesIn, BytesOut: bytesOut, ExitStatus: exit, RecordingRef: recordingRef}); err != nil {
 			log.Error("record session end", "err", err.Error())
 		}
 	}
 	log.Info("session closed", "bytes_in", bytesIn, "bytes_out", bytesOut)
 }
 
-func (s *Server) handleSession(nc ssh.NewChannel, target *ssh.Client, d *Decision) (int64, int64, *int) {
+func (s *Server) handleSession(nc ssh.NewChannel, target *ssh.Client, d *Decision, rec Recording) (int64, int64, *int) {
 	userCh, userReqs, err := nc.Accept()
 	if err != nil {
 		s.logger.Warn("accept user channel", "err", err.Error())
@@ -239,7 +281,7 @@ func (s *Server) handleSession(nc ssh.NewChannel, target *ssh.Client, d *Decisio
 		_ = userCh.Close()
 		return 0, 0, nil
 	}
-	return s.proxySession(userCh, targetCh, userReqs, targetReqs, d)
+	return s.proxySession(userCh, targetCh, userReqs, targetReqs, d, rec)
 }
 
 // rejectWithNotice accepts a session only to deliver a one-line error, then

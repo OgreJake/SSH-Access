@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -220,7 +223,6 @@ type grantDTO struct {
 	Shell         bool     `json:"shell"`
 	Exec          bool     `json:"exec"`
 	SFTP          bool     `json:"sftp"`
-	PortForward   bool     `json:"port_forward"`
 	Recording     string   `json:"recording"`
 }
 
@@ -236,7 +238,7 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 			ID: g.ID, SubjectType: g.SubjectType, Subject: g.Subject,
 			TargetType: g.TargetType, Target: g.Target, Principals: g.Principals,
 			MaxTTLSeconds: int(g.MaxTTL / time.Second),
-			Shell:         g.Shell, Exec: g.Exec, SFTP: g.SFTP, PortForward: g.PortForward,
+			Shell:         g.Shell, Exec: g.Exec, SFTP: g.SFTP,
 			Recording: g.Recording,
 		})
 	}
@@ -254,7 +256,6 @@ func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
 		Shell         bool     `json:"shell"`
 		Exec          bool     `json:"exec"`
 		SFTP          bool     `json:"sftp"`
-		PortForward   bool     `json:"port_forward"`
 		Recording     string   `json:"recording"`
 	}
 	if err := decode(r, &in); err != nil {
@@ -269,7 +270,7 @@ func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
 		SubjectType: in.SubjectType, SubjectID: in.SubjectID,
 		TargetType: in.TargetType, TargetID: in.TargetID,
 		Principals: in.Principals, MaxTTL: time.Duration(in.MaxTTLSeconds) * time.Second,
-		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP, AllowPortForward: in.PortForward,
+		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP,
 		Recording: in.Recording,
 	})
 	if err != nil {
@@ -287,7 +288,6 @@ func (s *Server) patchGrant(w http.ResponseWriter, r *http.Request) {
 		Shell         *bool     `json:"shell"`
 		Exec          *bool     `json:"exec"`
 		SFTP          *bool     `json:"sftp"`
-		PortForward   *bool     `json:"port_forward"`
 		Recording     *string   `json:"recording"`
 	}
 	if err := decode(r, &in); err != nil {
@@ -301,7 +301,7 @@ func (s *Server) patchGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.UpdateGrant(r.Context(), id, store.UpdateGrantInput{
 		Principals: in.Principals, MaxTTL: ttl,
-		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP, AllowPortForward: in.PortForward,
+		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP,
 		Recording: in.Recording,
 	}); err != nil {
 		writeStoreError(w, err)
@@ -421,25 +421,63 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type dto struct {
-		ID         string     `json:"id"`
-		StartedAt  time.Time  `json:"started_at"`
-		EndedAt    *time.Time `json:"ended_at"`
-		Subject    string     `json:"subject"`
-		Server     string     `json:"server"`
-		Login      string     `json:"login"`
-		SourceIP   string     `json:"source_ip"`
-		CertSerial *int64     `json:"cert_serial"`
-		BytesIn    int64      `json:"bytes_in"`
-		BytesOut   int64      `json:"bytes_out"`
-		ExitStatus *int       `json:"exit_status"`
-		Recording  string     `json:"recording"`
+		ID           string     `json:"id"`
+		StartedAt    time.Time  `json:"started_at"`
+		EndedAt      *time.Time `json:"ended_at"`
+		Subject      string     `json:"subject"`
+		Server       string     `json:"server"`
+		Login        string     `json:"login"`
+		SourceIP     string     `json:"source_ip"`
+		CertSerial   *int64     `json:"cert_serial"`
+		BytesIn      int64      `json:"bytes_in"`
+		BytesOut     int64      `json:"bytes_out"`
+		ExitStatus   *int       `json:"exit_status"`
+		Recording    string     `json:"recording"`
+		HasRecording bool       `json:"has_recording"`
 	}
 	out := make([]dto, 0, len(sessions))
 	for _, x := range sessions {
 		out = append(out, dto{x.ID, x.StartedAt, x.EndedAt, x.SubjectLabel, x.ServerLabel, x.Login,
-			x.SourceIP, x.CertSerial, x.BytesIn, x.BytesOut, x.ExitStatus, x.Recording})
+			x.SourceIP, x.CertSerial, x.BytesIn, x.BytesOut, x.ExitStatus, x.Recording, x.RecordingRef != ""})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// terminateSession flags an active session for the broker to kill (ADR-016).
+func (s *Server) terminateSession(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.RequestSessionTermination(r.Context(), r.PathValue("id")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "termination_requested"})
+}
+
+// getRecording streams a session's .cast recording (ADR-011). The filename
+// comes from the stored ref (base only, to prevent path traversal).
+func (s *Server) getRecording(w http.ResponseWriter, r *http.Request) {
+	ref, err := s.store.SessionRecordingRef(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if ref == "" {
+		writeError(w, http.StatusNotFound, "no recording for this session")
+		return
+	}
+	if s.recordingDir == "" {
+		writeError(w, http.StatusServiceUnavailable, "recording retrieval is not configured (set SSHBROKER_RECORDING_DIR)")
+		return
+	}
+	name := filepath.Base(ref)
+	f, err := os.Open(filepath.Join(s.recordingDir, name))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "recording file not found")
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/x-asciicast")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	_, _ = io.Copy(w, f)
 }
 
 type auditDTO struct {

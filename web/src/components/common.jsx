@@ -68,7 +68,6 @@ export function capsOf(g) {
   if (g.shell) c.push('shell');
   if (g.exec) c.push('exec');
   if (g.sftp) c.push('sftp');
-  if (g.port_forward) c.push('port-forward');
   return c.length ? c.join(', ') : '—';
 }
 

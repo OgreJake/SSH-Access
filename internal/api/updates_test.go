@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -187,6 +190,80 @@ func TestAPIDeleteServerPreservesSessions(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &sessions)
 	if len(sessions) != 1 || sessions[0]["server"] != "web01" {
 		t.Fatalf("session should be preserved with its label, got %+v", sessions)
+	}
+}
+
+func TestAPITerminateSession(t *testing.T) {
+	h, st := testAPI(t)
+	uid := createID(t, h, "POST", "/api/v1/users", map[string]any{"username": "alice"})
+	sess, err := st.CreateSession(testCtx(), store.SessionStart{
+		SubjectType: "user", SubjectID: &uid, SubjectLabel: "alice", ServerLabel: "web01",
+		LoginPrincipal: "ec2-user", AccessMode: "cert", SourceIP: "10.0.0.1", Recording: "metadata",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if rec := do(t, h, "POST", "/api/v1/sessions/"+sess+"/terminate", testToken, nil); rec.Code != http.StatusOK {
+		t.Fatalf("terminate: %d (%s)", rec.Code, rec.Body)
+	}
+	doomed, err := st.SessionsToTerminate(testCtx(), []string{sess})
+	if err != nil || len(doomed) != 1 || doomed[0] != sess {
+		t.Fatalf("expected session flagged for termination, got %v (err %v)", doomed, err)
+	}
+	if rec := do(t, h, "POST", "/api/v1/sessions/00000000-0000-0000-0000-000000000000/terminate", testToken, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("terminate unknown: %d, want 404", rec.Code)
+	}
+}
+
+func TestAPIGetRecording(t *testing.T) {
+	h, st := testAPI(t)
+	uid := createID(t, h, "POST", "/api/v1/users", map[string]any{"username": "alice"})
+	sess, err := st.CreateSession(testCtx(), store.SessionStart{
+		SubjectType: "user", SubjectID: &uid, SubjectLabel: "alice", ServerLabel: "web01",
+		LoginPrincipal: "ec2-user", AccessMode: "cert", SourceIP: "10.0.0.1", Recording: "full",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// No recording ref yet → 404 (uses the shared handler, no dir configured).
+	if rec := do(t, h, "GET", "/api/v1/sessions/"+sess+"/recording", testToken, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("no-ref recording: %d, want 404", rec.Code)
+	}
+
+	// Now write a recording file and set the ref, with a recording-dir-enabled server.
+	dir := t.TempDir()
+	ref := sess + ".cast"
+	if err := os.WriteFile(filepath.Join(dir, ref), []byte("{\"version\":2}\n[0.1,\"o\",\"hello\"]\n"), 0o600); err != nil {
+		t.Fatalf("write cast: %v", err)
+	}
+	if err := st.SetSessionRecordingRef(testCtx(), sess, ref); err != nil {
+		t.Fatalf("set ref: %v", err)
+	}
+	srv, err := New(st, discardLogger(), testToken)
+	if err != nil {
+		t.Fatalf("new api: %v", err)
+	}
+	srv.SetRecordingDir(dir)
+	h2 := srv.Handler()
+
+	rec := do(t, h2, "GET", "/api/v1/sessions/"+sess+"/recording", testToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download recording: %d (%s)", rec.Code, rec.Body)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); cd == "" {
+		t.Fatal("expected attachment header")
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"o","hello"`)) && !bytes.Contains(rec.Body.Bytes(), []byte("hello")) {
+		t.Fatalf("recording body missing content: %s", rec.Body)
+	}
+
+	// Path traversal in the ref is neutralized (filepath.Base) → not found.
+	if err := st.SetSessionRecordingRef(testCtx(), sess, "../../etc/passwd"); err != nil {
+		t.Fatalf("set ref traversal: %v", err)
+	}
+	if rec := do(t, h2, "GET", "/api/v1/sessions/"+sess+"/recording", testToken, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("traversal ref should 404 (base=passwd not in dir), got %d", rec.Code)
 	}
 }
 

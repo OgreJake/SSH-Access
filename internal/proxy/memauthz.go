@@ -103,6 +103,7 @@ func (a *MemoryAuthorizer) Authorize(_ context.Context, id Identity, target Targ
 			Login:              login,
 			Principals:         []string{login},
 			TTL:                ttl,
+			Recording:          "metadata", // file backend does not configure full recording
 			CertPermissions: ca.Permissions{
 				PTY:            g.Shell, // interactive shells need a PTY
 				PortForwarding: g.PortForward,
