@@ -80,6 +80,12 @@ type Config struct {
 	// RecordingDir, when set, enables full session recording to .cast files in
 	// this directory for grants with recording policy "full" (ADR-011).
 	RecordingDir string
+
+	// AsciinemaServerURL, when set, makes the broker upload each finished .cast
+	// to that asciinema server and store the returned playback URL (ADR-011).
+	AsciinemaServerURL string
+	// AsciinemaBin is the asciinema CLI to invoke (default "asciinema").
+	AsciinemaBin string
 }
 
 // Load reads and validates configuration from the environment.
@@ -164,6 +170,8 @@ func Load() (*Config, error) {
 	}
 
 	c.RecordingDir = os.Getenv("SSHBROKER_RECORDING_DIR")
+	c.AsciinemaServerURL = os.Getenv("SSHBROKER_ASCIINEMA_SERVER_URL")
+	c.AsciinemaBin = getenv("SSHBROKER_ASCIINEMA_BIN", "asciinema")
 
 	maxTTL := getenv("SSHBROKER_CERT_MAX_TTL", "5m")
 	c.CertMaxTTL, err = time.ParseDuration(maxTTL)

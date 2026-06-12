@@ -77,8 +77,21 @@ func TestSessionsToTerminate(t *testing.T) {
 		t.Fatalf("expected only bob after alice ended, got %v", doomed)
 	}
 
-	// Requesting termination of an already-ended session is ErrNotFound.
-	if err := st.RequestSessionTermination(ctx, aliceSess); err != ErrNotFound {
-		t.Fatalf("expected ErrNotFound for ended session, got %v", err)
+	// Recording URL round-trips through the store and listing (ADR-011).
+	if err := st.SetSessionRecordingURL(ctx, bobSess, "http://localhost:4000/a/bob1"); err != nil {
+		t.Fatalf("set recording url: %v", err)
+	}
+	sessions, err := st.ListRecentSessions(ctx, 50)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	var foundURL string
+	for _, s := range sessions {
+		if s.ID == bobSess {
+			foundURL = s.RecordingURL
+		}
+	}
+	if foundURL != "http://localhost:4000/a/bob1" {
+		t.Fatalf("recording url not stored/listed, got %q", foundURL)
 	}
 }

@@ -24,6 +24,20 @@ func (s *Store) RequestSessionTermination(ctx context.Context, id string) error 
 	return nil
 }
 
+// SetSessionRecordingURL stores the asciinema-server playback URL for a session
+// after its .cast file has been uploaded (ADR-011).
+func (s *Store) SetSessionRecordingURL(ctx context.Context, id, url string) error {
+	ct, err := s.Pool.Exec(ctx,
+		`UPDATE sessions SET recording_url = $2 WHERE id = $1::uuid`, id, url)
+	if err != nil {
+		return fmt.Errorf("set recording url: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SessionRecordingRef returns the stored recording reference for a session
 // (empty if it has none). Returns ErrNotFound if the session does not exist.
 func (s *Store) SessionRecordingRef(ctx context.Context, id string) (string, error) {

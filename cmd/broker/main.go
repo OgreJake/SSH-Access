@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -146,13 +147,18 @@ func run() error {
 		recorder = fr
 		logger.Info("full session recording enabled", "dir", cfg.RecordingDir)
 	}
+	var uploader recordingUploader
+	if cfg.AsciinemaServerURL != "" {
+		uploader = asciinemaUploader{bin: cfg.AsciinemaBin, serverURL: cfg.AsciinemaServerURL}
+		logger.Info("asciinema upload enabled", "server", cfg.AsciinemaServerURL)
+	}
 
 	sshSrv, err := proxy.New(proxy.Config{
 		HostKeyPath:      cfg.SSHHostKeyPath,
 		Authenticator:    authn,
 		Authorizer:       authz,
 		Issuer:           issuer,
-		Auditor:          auditAdapter{st: st, logger: logger},
+		Auditor:          auditAdapter{st: st, logger: logger, recordingDir: cfg.RecordingDir, uploader: uploader},
 		BrokerSourceAddr: cfg.BrokerSourceAddr,
 		Logger:           logger,
 		Recorder:         recorder,
@@ -312,8 +318,31 @@ func runReaper(ctx context.Context, srv *proxy.Server, st *store.Store, interval
 // auditAdapter implements proxy.Auditor over the database store: it writes
 // session rows and appends to the hash-chained audit log.
 type auditAdapter struct {
-	st     *store.Store
-	logger *slog.Logger
+	st           *store.Store
+	logger       *slog.Logger
+	recordingDir string
+	uploader     recordingUploader // nil when upload is disabled
+}
+
+// uploadRecording uploads a finished .cast to the asciinema server in the
+// background and stores the returned playback URL. Best-effort: failures are
+// logged and leave the local recording (still downloadable) in place. It runs
+// detached from the session context, which is already cancelled by now.
+func (a auditAdapter) uploadRecording(sessionID, path string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		url, err := a.uploader.Upload(ctx, path)
+		if err != nil {
+			a.logger.Error("asciinema upload failed", "session_id", sessionID, "err", err.Error())
+			return
+		}
+		if err := a.st.SetSessionRecordingURL(context.Background(), sessionID, url); err != nil {
+			a.logger.Error("store recording url", "session_id", sessionID, "err", err.Error())
+			return
+		}
+		a.logger.Info("recording uploaded", "session_id", sessionID, "url", url)
+	}()
 }
 
 func (a auditAdapter) StartSession(ctx context.Context, r proxy.SessionRecord) (string, error) {
@@ -354,6 +383,9 @@ func (a auditAdapter) EndSession(ctx context.Context, id string, o proxy.Session
 	if o.RecordingRef != "" {
 		if err := a.st.SetSessionRecordingRef(ctx, id, o.RecordingRef); err != nil {
 			a.logger.Error("set recording ref", "session_id", id, "err", err.Error())
+		}
+		if a.uploader != nil && a.recordingDir != "" {
+			a.uploadRecording(id, filepath.Join(a.recordingDir, filepath.Base(o.RecordingRef)))
 		}
 	}
 	detail := map[string]string{

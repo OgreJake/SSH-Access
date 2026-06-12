@@ -434,11 +434,12 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		ExitStatus   *int       `json:"exit_status"`
 		Recording    string     `json:"recording"`
 		HasRecording bool       `json:"has_recording"`
+		RecordingURL string     `json:"recording_url"`
 	}
 	out := make([]dto, 0, len(sessions))
 	for _, x := range sessions {
 		out = append(out, dto{x.ID, x.StartedAt, x.EndedAt, x.SubjectLabel, x.ServerLabel, x.Login,
-			x.SourceIP, x.CertSerial, x.BytesIn, x.BytesOut, x.ExitStatus, x.Recording, x.RecordingRef != ""})
+			x.SourceIP, x.CertSerial, x.BytesIn, x.BytesOut, x.ExitStatus, x.Recording, x.RecordingRef != "", x.RecordingURL})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -32,6 +32,7 @@ type SessionRow struct {
 	ExitStatus   *int
 	Recording    string
 	RecordingRef string
+	RecordingURL string
 }
 
 // ListRecentSessions returns the most recent sessions, newest first.
@@ -42,7 +43,8 @@ func (s *Store) ListRecentSessions(ctx context.Context, limit int) ([]SessionRow
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id::text, started_at, ended_at, subject_label, server_label,
 		        login_principal, COALESCE(host(source_ip), ''), cert_serial,
-		        bytes_in, bytes_out, exit_status, recording::text, COALESCE(recording_ref, '')
+		        bytes_in, bytes_out, exit_status, recording::text,
+		        COALESCE(recording_ref, ''), COALESCE(recording_url, '')
 		 FROM sessions ORDER BY started_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
@@ -52,7 +54,8 @@ func (s *Store) ListRecentSessions(ctx context.Context, limit int) ([]SessionRow
 	for rows.Next() {
 		var r SessionRow
 		if err := rows.Scan(&r.ID, &r.StartedAt, &r.EndedAt, &r.SubjectLabel, &r.ServerLabel,
-			&r.Login, &r.SourceIP, &r.CertSerial, &r.BytesIn, &r.BytesOut, &r.ExitStatus, &r.Recording, &r.RecordingRef); err != nil {
+			&r.Login, &r.SourceIP, &r.CertSerial, &r.BytesIn, &r.BytesOut, &r.ExitStatus, &r.Recording,
+			&r.RecordingRef, &r.RecordingURL); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

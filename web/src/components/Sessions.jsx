@@ -71,10 +71,19 @@ export default function Sessions() {
                       Terminate
                     </button>
                   )}
-                  {s.has_recording && (
-                    <button className="btn sm" onClick={() => getRecording(s)}>
-                      Recording
+                  {s.recording_url ? (
+                    <button
+                      className="btn sm"
+                      onClick={() => window.open(s.recording_url, '_blank', 'noopener,noreferrer')}
+                    >
+                      View recording
                     </button>
+                  ) : (
+                    s.has_recording && (
+                      <button className="btn sm" onClick={() => getRecording(s)}>
+                        Download
+                      </button>
+                    )
                   )}
                 </td>
               </tr>
