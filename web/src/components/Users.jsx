@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { useAsync, Panel, AsyncBlock, Field, useForm } from './common';
+import { useAsync, Panel, AsyncBlock, Field, useForm, useCan } from './common';
 
 export default function Users() {
   const state = useAsync(() => api.listUsers(), []);
   const [notice, setNotice] = useState(null);
   const [keyFor, setKeyFor] = useState(null); // user id we're adding a key to
   const [editing, setEditing] = useState(null); // user being edited
+  const can = useCan();
+  const canWrite = can('users:write');
 
   async function remove(u) {
     if (
@@ -32,12 +34,14 @@ export default function Users() {
     >
       {notice && <p className="notice">{notice}</p>}
 
-      <CreateUser
-        onCreated={(u) => {
-          setNotice(`Created user (id ${u.id}).`);
-          state.reload();
-        }}
-      />
+      {canWrite && (
+        <CreateUser
+          onCreated={(u) => {
+            setNotice(`Created user (id ${u.id}).`);
+            state.reload();
+          }}
+        />
+      )}
 
       <AsyncBlock state={state} empty="No users yet.">
         <table className="grid">
@@ -62,26 +66,32 @@ export default function Users() {
                 </td>
                 <td>{u.key_count}</td>
                 <td className="row-actions">
-                  <button className="btn sm" onClick={() => setEditing(editing && editing.id === u.id ? null : u)}>
-                    Edit
-                  </button>
-                  <button className="btn sm" onClick={() => setKeyFor(keyFor === u.id ? null : u.id)}>
-                    Add key
-                  </button>
-                  <button
-                    className="btn sm"
-                    onClick={async () => {
-                      const next = u.status === 'active' ? 'disabled' : 'active';
-                      await api.setUserStatus(u.id, next);
-                      setNotice(`${u.username} is now ${next}.`);
-                      state.reload();
-                    }}
-                  >
-                    {u.status === 'active' ? 'Disable' : 'Enable'}
-                  </button>
-                  <button className="btn sm danger" onClick={() => remove(u)}>
-                    Remove
-                  </button>
+                  {canWrite ? (
+                    <>
+                      <button className="btn sm" onClick={() => setEditing(editing && editing.id === u.id ? null : u)}>
+                        Edit
+                      </button>
+                      <button className="btn sm" onClick={() => setKeyFor(keyFor === u.id ? null : u.id)}>
+                        Add key
+                      </button>
+                      <button
+                        className="btn sm"
+                        onClick={async () => {
+                          const next = u.status === 'active' ? 'disabled' : 'active';
+                          await api.setUserStatus(u.id, next);
+                          setNotice(`${u.username} is now ${next}.`);
+                          state.reload();
+                        }}
+                      >
+                        {u.status === 'active' ? 'Disable' : 'Enable'}
+                      </button>
+                      <button className="btn sm danger" onClick={() => remove(u)}>
+                        Remove
+                      </button>
+                    </>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
                 </td>
               </tr>
             ))}

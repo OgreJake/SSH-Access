@@ -9,9 +9,23 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// ReviewIntervalDays is the default grant recertification cadence in days,
+// from SSHBROKER_REVIEW_INTERVAL_DAYS (default 90 — quarterly, ADR-017). It is
+// the interval applied when a grant is created without an explicit review date
+// and when a grant is recertified.
+func ReviewIntervalDays() int {
+	if v := os.Getenv("SSHBROKER_REVIEW_INTERVAL_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 90
+}
 
 // Environment selects dev vs prod behaviour.
 type Environment string

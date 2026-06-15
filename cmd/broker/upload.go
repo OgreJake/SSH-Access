@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -53,4 +54,28 @@ func parseAsciinemaURL(output, serverURL string) (string, error) {
 		}
 	}
 	return trim(matches[len(matches)-1]), nil
+}
+
+// toURIPath reduces a full URL to its path (plus query/fragment). We store only
+// the path so the UI can resolve recordings against whatever origin the
+// SSHBroker is currently served from, rather than a hardcoded host.
+//
+// NOTE(future): the broker and the asciinema server will eventually sit behind
+// a shared NGINX reverse proxy. The path asciinema uses today ("/a/<id>") is
+// assumed to be reachable under that same origin. When the proxy routing is
+// finalized (e.g. asciinema mounted under a sub-path or rewritten), this
+// path-only assumption — and possibly a prefix rewrite — must be revisited.
+func toURIPath(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Path == "" {
+		return raw
+	}
+	p := u.Path
+	if u.RawQuery != "" {
+		p += "?" + u.RawQuery
+	}
+	if u.Fragment != "" {
+		p += "#" + u.Fragment
+	}
+	return p
 }

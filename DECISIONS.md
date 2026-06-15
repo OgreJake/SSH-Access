@@ -101,12 +101,28 @@ Non-human identities are modeled explicitly:
 
 ## 5. Identity, Authentication & Authorization
 
-### ADR-008 — Local accounts first; Entra ID OIDC later for authn only; groups in-app
-**Status:** ACCEPTED
+### ADR-008 — Authentication: Entra OIDC for the management plane; browser SSO/MFA for SSH; break-glass local admin
+**Status:** ACCEPTED (revised). Delivered in two phases (A: management plane, B: SSH path).
 
-- **Phase one:** local accounts with **mandatory MFA (TOTP)**.
-- **Later:** **Entra ID via OIDC for authentication only.** On SSO login the Entra identity is mapped to a local user record. **Group membership and all authorization live in this application's database** and are never imported from Entra.
-- **Break-glass:** local accounts remain permanently for IdP outages. They are **individually named** (no shared root account), MFA-protected, heavily recorded, alert on use, and reviewed regularly.
+Authentication spans **two distinct surfaces** with different users, risk, and mechanics; they are designed and built separately.
+
+**Management plane (API/UI) — Entra OIDC via the reverse proxy.**
+- Admin identity is **Microsoft Entra ID via OIDC**, terminated at the **NGINX/oauth2-proxy** layer co-located on the broker host (not in the broker app). The proxy holds the Entra session, enforces idle + absolute timeouts, and injects the authenticated identity (email + Entra group membership) into each upstream request as headers.
+- The broker API **trusts those headers only because it is reachable solely through the proxy.** Required invariants (deployment-critical): the API binds to **loopback (127.0.0.1) only**; the proxy **strips any client-supplied identity headers** before setting its own; and the proxy sends a **shared secret header that the API verifies**, so no other local process can forge an admin identity. The API authorizes each request from the trusted identity (roles/permissions per **ADR-020**); it keeps **no session of its own** for OIDC admins.
+
+**Break-glass local admin.**
+- A single local admin for when Entra is **unreachable or misconfigured**. Because the OIDC proxy itself cannot authenticate anyone when Entra is down, break-glass **bypasses the proxy**: a separate NGINX location/port routes to a **broker-native local login** — password (**argon2id**-hashed, stored in DB), **rate-limited** — that issues a **broker-managed server-side opaque session** (httpOnly, Secure, SameSite cookie) with absolute + idle timeouts and real logout/revocation. This is the **only** place the broker handles a password or keeps its own session table. The account holds the `admin` role, every use is **audited and alerted**, the network location is restricted, and a separate second factor (TOTP) is a recommended hardening follow-up.
+
+**SSH access path (Phase B) — browser SSO/MFA, default keyless via short-lived cert.**
+- **Default (cert-via-helper):** a small **login helper** opens the user's browser, performs **Entra OIDC + MFA**, and the broker (acting as a **user-facing CA**, distinct from the target CA of ADR-001/006) issues a **short-lived user SSH certificate** (default 8–12h, configurable) into the user's `ssh-agent`. The SSH front door trusts this user-CA and authenticates connections by that cert, mapping its encoded identity to the user record. The **cert TTL is the "log in once" window**: until it expires, `ssh login+host@broker` to any number of targets just works — no permanent keys, no re-prompt per connection.
+- **Fallback (no helper):** stock-`ssh` **keyboard-interactive** browser flow — the broker presents a URL, the user completes OIDC + MFA in the browser, and the handshake completes. Works with zero client tooling but **re-prompts on every new connection** (no persistent client credential to reuse).
+- **Registered public keys remain an available login style** and are **mandatory for service accounts**, which are **MFA-exempt** so automation (Ansible, etc.) never hits a browser prompt. Browser SSO/MFA is the **default for human interactive users**.
+
+**Phasing.**
+- **Phase A** (build first): management-plane OIDC-via-proxy + break-glass local login + RBAC (ADR-020) + management-action audit (closes the ADR-017 reviewer-attribution gap). **IMPLEMENTED** — see `docs/auth-setup.md`. Identity-extraction middleware (break-glass session cookie / trusted OIDC headers gated on the proxy shared secret / transitional bearer), per-route permission enforcement, `auth/local/login`+`logout`+`whoami`, argon2id break-glass credentials with rate-limiting, server-side sessions (absolute+idle), blanket management-mutation audit with real identity, the React sign-in (SSO + break-glass) with role-aware control hiding, and the static bearer token retired by default (opt-in `SSHBROKER_ALLOW_BEARER_TOKEN`).
+- **Phase B**: SSH-path browser SSO/MFA — user-facing CA + signer, the login-helper and its cert-issuance endpoint (behind the OIDC proxy), front-door cert authentication, and the keyboard-interactive fallback. Detailed in a Phase B design before build.
+
+**Consequences.** Header-trust depends on the loopback-bind + header-strip + shared-secret invariants — these are the auth boundary and must hold in deployment. Break-glass is a deliberate, compensating-control-wrapped bypass. Phase B introduces a **second CA** (user→broker auth) separate from the broker→target CA; key custody follows the KMS approach (ADR-006) with its own key. Authorization for SSH is unchanged (grants/principals, ADR-010/019); only *how the user authenticates to the broker* changes.
 
 ### ADR-010 — RBAC via group-to-group grants
 **Status:** ACCEPTED
@@ -158,7 +174,7 @@ TLS on the web/API; mTLS between components if/when split. **At rest:** the secr
 - **Always:** metadata — who, source IP, target, login principal, grant used, access mode, cert serial (Mode A), channel type, start/stop, duration, exit status, bytes, file-transfer manifest for SFTP.
 - **Opt-in per ServerGroup/grant:** full recording — terminal stream for shells, full command capture for exec, file-transfer detail for SFTP — stored encrypted on the self-hosted volume. Mandatory for Mode B2 legacy targets.
 
-**Implemented.** Full recording captures the target→user terminal stream as an asciinema v2 (`.cast`) file under `SSHBROKER_RECORDING_DIR`, one per session (`<session-id>.cast`), referenced by `sessions.recording_ref`. Policy composes across matching grants (any `full` wins). User keystrokes are deliberately **not** recorded (they can contain typed secrets). When `SSHBROKER_ASCIINEMA_SERVER_URL` is set, the broker uploads each finished `.cast` to that self-hosted asciinema server (`asciinema upload <file> --server-url <url>`) and stores the returned playback URL in `sessions.recording_url`; the UI's recording button opens that URL in a new tab. Without it, recordings are downloadable from the broker host and play with `asciinema play`. At-rest encryption of the recording volume remains an ops/deployment concern (ADR-009).
+**Implemented.** Full recording captures the target→user terminal stream as an asciinema v2 (`.cast`) file under `SSHBROKER_RECORDING_DIR`, one per session (`<session-id>.cast`), referenced by `sessions.recording_ref`. Policy composes across matching grants (any `full` wins). User keystrokes are deliberately **not** recorded (they can contain typed secrets). When `SSHBROKER_ASCIINEMA_SERVER_URL` is set, the broker uploads each finished `.cast` to that self-hosted asciinema server (`asciinema upload <file> --server-url <url>`) and stores **only the URI path** of the returned playback URL in `sessions.recording_url`; the UI's recording button opens that path against the origin it is currently served from. **NOTE (future):** the broker and asciinema server will sit behind a shared NGINX reverse proxy. Uploads still target `localhost:4000`, but links must resolve on the user's current host, so the host is intentionally dropped. When the proxy routing is finalized, confirm the asciinema path (`/a/<id>`) is reachable under that origin and rewrite the stored prefix if needed. Without it, recordings are downloadable from the broker host and play with `asciinema play`. At-rest encryption of the recording volume remains an ops/deployment concern (ADR-009).
 
 ### ADR-015 — Tamper-evident, time-synced, retained, exportable audit log
 **Status:** ACCEPTED (SOC 2)
@@ -174,9 +190,13 @@ TLS on the web/API; mTLS between components if/when split. **At rest:** the secr
 Admins can **instantly disable a user/service account or revoke a grant**, which **terminates that principal's active sessions** and blocks new ones. Supports the joiner/mover/leaver lifecycle SOC 2 expects.
 
 ### ADR-017 — Access reviews / grant recertification
-**Status:** ACCEPTED (SOC 2)
+**Status:** ACCEPTED (SOC 2) — *surfacing implemented; auto-expiry deliberately deferred*
 
 Every grant carries a **review-by date**. The UI provides a **"who can access what"** report and surfaces grants due for recertification, supporting periodic (e.g., quarterly) access reviews. Optional auto-expiry of un-recertified grants.
+
+**Implemented (surface-only).** Each grant has a review date defaulting to now + `SSHBROKER_REVIEW_INTERVAL_DAYS` (default 90 / quarterly) at creation, overridable per grant. The grants list shows each grant's review status — `ok` / `due_soon` (within 14 days) / `overdue` / `none` — with a filter for grants needing review and a CSV export that serves as the access-review ("who can access what") report. A **recertify** action (UI button, `POST /api/v1/grants/{id}/recertify`, and `broker admin recertify-grant`) pushes the date out by the configured interval and writes a `grant.recertified` audit event.
+
+**Deliberately deferred:** *auto-expiry* (denying access on a missed review) is **not** implemented — a forgotten review should not lock operators out, possibly mid-incident; if added later it should be a separate config-gated flag with a grace period. **Reviewer identity** in the recertify audit event is currently the generic management-plane actor (`api` / `admin-cli`); true per-reviewer attestation arrives with the management-plane login work (ADR-008).
 
 ### ADR-018 — Account & session hardening + alerting
 **Status:** ACCEPTED (SOC 2)
@@ -207,6 +227,28 @@ Reinterprets the `login+host` addressing of ADR-002. The token left of `+` is no
 **Security.** Derivation can only select a principal that a grant already permits and that the server's `allowed_principals` already allows (the defense-in-depth gate of ADR-014 applies to the resolved account), so there is no privilege escalation — it is convenience over information the broker already holds. **Trade-off:** people sharing one target OS account share the same *on-host* (kernel) identity; the broker authorizes and attributes them separately but cannot isolate them at the host filesystem/`sudo` level. Per-person on-host isolation requires distinct target accounts, which should be owned by configuration management, not broker-provisioned.
 
 **Scope.** Implemented in the DB-backed authorizer; the dev file/`targets.json` authorizer remains explicit-only. Fully backward compatible with existing `account+host` usage.
+
+### ADR-020 — Management-plane authorization: roles, granular permissions, sessions
+**Status:** ACCEPTED. Companion to ADR-008 Phase A.
+
+**Context.** The management plane was a single static bearer token — one undifferentiated admin, no per-person identity, and (as noted in ADR-017) no real actor for attestations. With named admin identities from ADR-008, the management plane gains role-based access control and per-admin audit.
+
+**Permission model (granular).** Authorization is expressed as fine-grained permissions, checked per request by route→permission middleware. Starting set (extensible):
+`users:read`, `users:write`, `servers:read`, `servers:write`, `groups:read`, `groups:write`, `grants:read`, `grants:write`, `grants:recertify`, `sessions:read`, `sessions:terminate`, `audit:read`, `recordings:read`.
+
+**Roles** are named bundles of permissions. Built-in to start:
+- **admin** — all permissions (full management).
+- **auditor** — all `:read` permissions plus audit/recording export; **no mutations** (supports SOC 2 access reviews by a non-privileged reviewer).
+
+The permission set is deliberately granular so additional roles (e.g. a server-only operator with `servers:write` but not `users:write`/`grants:write`) can be added without reworking enforcement. **Custom, DB-defined roles** (admin-editable bundles of the above permissions) are the planned near-term extension; Phase A ships the two built-ins.
+
+**Identity → role mapping.** For OIDC admins, **Entra group membership → role** via a configured mapping (which AD group grants which role), read from the proxy-injected groups header. An admin may hold multiple roles; effective permissions are the **union**. The **break-glass** local admin implicitly holds `admin`.
+
+**Sessions.** OIDC admin sessions live in the reverse proxy (ADR-008); the broker authorizes per request from the trusted identity header and keeps no session. The broker maintains server-side opaque sessions **only** for the break-glass local login (cookie-based, absolute + idle timeouts, revocable) — this also satisfies the management-plane session-timeout intent of ADR-018.
+
+**Audit.** Every management **mutation** now writes an audit event with the **real admin identity** (Entra email, or `break-glass:<name>`) as actor, plus action and resource. This closes the ADR-017 reviewer-attribution gap and provides general management-plane accountability.
+
+**Status update:** **IMPLEMENTED** in Phase A (migration 0007 `local_admins`+`admin_sessions`; `internal/auth` permission/role/mapping model; per-route `require()` enforcement). **Consequences.** New persistence: a break-glass admin credential and a break-glass session table (migrations). Role/permission definitions are built-in for Phase A with a config-driven Entra-group→role mapping; DB-defined custom roles are a later migration. The API gains identity-extraction middleware (trusted headers for OIDC, session cookie for break-glass) and permission-check middleware. The static bearer token is retired once this lands (kept only as a transitional/dev fallback if needed, behind config).
 
 ---
 
@@ -301,7 +343,7 @@ ansible -> ProxyJump=svc-ansible@broker -> broker authn (service-account key)
 | ADR-005 | API + React web UI | ACCEPTED |
 | ADR-006 | CA key in AWS KMS (asymmetric); EC2 instance role; KMS envelope encryption for secret store | ACCEPTED |
 | ADR-007 | Tightly constrained short-lived certs | ACCEPTED |
-| ADR-008 | Local+MFA first; Entra OIDC (authn only) later; groups in-app | ACCEPTED |
+| ADR-008 | Entra OIDC (mgmt, via proxy) + browser SSO/MFA for SSH (cert-via-helper) + break-glass | ACCEPTED |
 | ADR-009 | Encryption in transit and at rest | ACCEPTED |
 | ADR-010 | RBAC via group-to-group grants | ACCEPTED |
 | ADR-011 | Metadata always; full recording opt-in | ACCEPTED |
@@ -313,3 +355,4 @@ ansible -> ProxyJump=svc-ansible@broker -> broker authn (service-account key)
 | ADR-017 | Access reviews / grant recertification | ACCEPTED |
 | ADR-018 | Account/session hardening + alerting + backups | ACCEPTED |
 | ADR-019 | Subject-addressed connections; broker derives target account from grant | ACCEPTED |
+| ADR-020 | Management-plane RBAC (roles + granular permissions) + sessions | ACCEPTED |

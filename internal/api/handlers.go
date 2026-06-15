@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/yourorg/sshbroker/internal/proxy"
 	"github.com/yourorg/sshbroker/internal/store"
 )
+
+var errInvalidReviewDate = errors.New("review_by must be YYYY-MM-DD or RFC3339")
 
 // ---------- users ----------
 
@@ -213,17 +216,40 @@ func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
 }
 
 type grantDTO struct {
-	ID            string   `json:"id"`
-	SubjectType   string   `json:"subject_type"`
-	Subject       string   `json:"subject"`
-	TargetType    string   `json:"target_type"`
-	Target        string   `json:"target"`
-	Principals    []string `json:"principals"`
-	MaxTTLSeconds int      `json:"max_ttl_seconds"`
-	Shell         bool     `json:"shell"`
-	Exec          bool     `json:"exec"`
-	SFTP          bool     `json:"sftp"`
-	Recording     string   `json:"recording"`
+	ID            string     `json:"id"`
+	SubjectType   string     `json:"subject_type"`
+	Subject       string     `json:"subject"`
+	TargetType    string     `json:"target_type"`
+	Target        string     `json:"target"`
+	Principals    []string   `json:"principals"`
+	MaxTTLSeconds int        `json:"max_ttl_seconds"`
+	Shell         bool       `json:"shell"`
+	Exec          bool       `json:"exec"`
+	SFTP          bool       `json:"sftp"`
+	Recording     string     `json:"recording"`
+	ReviewBy      *time.Time `json:"review_by"`
+	ReviewStatus  string     `json:"review_status"` // ok | due_soon | overdue | none (ADR-017)
+}
+
+// reviewDueSoonWindow is how far ahead a grant counts as "due soon".
+const reviewDueSoonWindow = 14 * 24 * time.Hour
+
+// reviewStatus classifies a grant's recertification state (ADR-017).
+func reviewStatus(reviewBy *time.Time, now time.Time) string {
+	if reviewBy == nil {
+		return "none"
+	}
+	day := 24 * time.Hour
+	due := reviewBy.UTC().Truncate(day)
+	today := now.UTC().Truncate(day)
+	switch {
+	case due.Before(today):
+		return "overdue"
+	case due.Before(today.Add(reviewDueSoonWindow)):
+		return "due_soon"
+	default:
+		return "ok"
+	}
 }
 
 func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +258,7 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	now := time.Now()
 	out := make([]grantDTO, 0, len(grants))
 	for _, g := range grants {
 		out = append(out, grantDTO{
@@ -240,6 +267,7 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 			MaxTTLSeconds: int(g.MaxTTL / time.Second),
 			Shell:         g.Shell, Exec: g.Exec, SFTP: g.SFTP,
 			Recording: g.Recording,
+			ReviewBy:  g.ReviewBy, ReviewStatus: reviewStatus(g.ReviewBy, now),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -257,6 +285,7 @@ func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
 		Exec          bool     `json:"exec"`
 		SFTP          bool     `json:"sftp"`
 		Recording     string   `json:"recording"`
+		ReviewBy      *string  `json:"review_by"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -266,18 +295,39 @@ func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "subject_id, target_id, and principals are required")
 		return
 	}
+	reviewBy, err := s.resolveReviewBy(in.ReviewBy)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	id, err := s.store.CreateGrant(r.Context(), store.CreateGrantInput{
 		SubjectType: in.SubjectType, SubjectID: in.SubjectID,
 		TargetType: in.TargetType, TargetID: in.TargetID,
 		Principals: in.Principals, MaxTTL: time.Duration(in.MaxTTLSeconds) * time.Second,
 		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP,
-		Recording: in.Recording,
+		Recording: in.Recording, ReviewBy: &reviewBy,
 	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// resolveReviewBy parses an optional review date (YYYY-MM-DD or RFC3339); when
+// absent it defaults to now + the configured review interval (ADR-017).
+func (s *Server) resolveReviewBy(raw *string) (time.Time, error) {
+	if raw == nil || *raw == "" {
+		return time.Now().AddDate(0, 0, s.reviewIntervalDays), nil
+	}
+	if t, err := time.Parse("2006-01-02", *raw); err == nil {
+		return t, nil
+	}
+	t, err := time.Parse(time.RFC3339, *raw)
+	if err != nil {
+		return time.Time{}, errInvalidReviewDate
+	}
+	return t, nil
 }
 
 func (s *Server) patchGrant(w http.ResponseWriter, r *http.Request) {
@@ -289,6 +339,7 @@ func (s *Server) patchGrant(w http.ResponseWriter, r *http.Request) {
 		Exec          *bool     `json:"exec"`
 		SFTP          *bool     `json:"sftp"`
 		Recording     *string   `json:"recording"`
+		ReviewBy      *string   `json:"review_by"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -299,15 +350,52 @@ func (s *Server) patchGrant(w http.ResponseWriter, r *http.Request) {
 		d := time.Duration(*in.MaxTTLSeconds) * time.Second
 		ttl = &d
 	}
+	var reviewBy *time.Time
+	if in.ReviewBy != nil {
+		t, err := s.resolveReviewBy(in.ReviewBy)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		reviewBy = &t
+	}
 	if err := s.store.UpdateGrant(r.Context(), id, store.UpdateGrantInput{
 		Principals: in.Principals, MaxTTL: ttl,
 		AllowShell: in.Shell, AllowExec: in.Exec, AllowSFTP: in.SFTP,
-		Recording: in.Recording,
+		Recording: in.Recording, ReviewBy: reviewBy,
 	}); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// recertifyGrant pushes a grant's review date out by the configured interval
+// and records the attestation in the audit log (ADR-017). True reviewer
+// identity arrives with the management-plane login work (ADR-008); for now the
+// actor is the generic management-plane principal.
+func (s *Server) recertifyGrant(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	newReview := time.Now().AddDate(0, 0, s.reviewIntervalDays)
+	if err := s.store.UpdateGrant(r.Context(), id, store.UpdateGrantInput{ReviewBy: &newReview}); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	actor := "api"
+	if p, ok := principalFrom(r.Context()); ok {
+		actor = p.Subject
+	}
+	_ = s.store.AppendAudit(r.Context(), store.AuditEvent{
+		Actor:     actor,
+		EventType: "grant.recertified",
+		Target:    id,
+		Detail:    map[string]string{"grant_id": id, "review_by": newReview.Format("2006-01-02")},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "recertified",
+		"review_by":     newReview,
+		"review_status": reviewStatus(&newReview, time.Now()),
+	})
 }
 
 func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {

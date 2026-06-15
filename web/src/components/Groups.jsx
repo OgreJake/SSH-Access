@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { useAsync, Panel, AsyncBlock, Field } from './common';
+import { useAsync, Panel, AsyncBlock, Field, useCan } from './common';
 
 export default function Groups() {
   const userGroups = useAsync(() => api.listUserGroups(), []);
@@ -8,6 +8,8 @@ export default function Groups() {
   const users = useAsync(() => api.listUsers(), []);
   const servers = useAsync(() => api.listServers(), []);
   const [notice, setNotice] = useState(null);
+  const can = useCan();
+  const canWrite = can('groups:write');
 
   return (
     <Panel
@@ -29,6 +31,7 @@ export default function Groups() {
       <div className="two-col">
         <GroupColumn
           kind="User"
+          canWrite={canWrite}
           groupsState={userGroups}
           membersState={users}
           memberLabel={(u) => u.username}
@@ -41,6 +44,7 @@ export default function Groups() {
         />
         <GroupColumn
           kind="Server"
+          canWrite={canWrite}
           groupsState={serverGroups}
           membersState={servers}
           memberLabel={(s) => s.hostname}
@@ -56,7 +60,7 @@ export default function Groups() {
   );
 }
 
-function GroupColumn({ kind, groupsState, membersState, memberLabel, createGroup, addMember, onChange }) {
+function GroupColumn({ kind, groupsState, membersState, memberLabel, createGroup, addMember, onChange, canWrite }) {
   const [name, setName] = useState('');
   const [selGroup, setSelGroup] = useState('');
   const [selMember, setSelMember] = useState('');
@@ -90,14 +94,16 @@ function GroupColumn({ kind, groupsState, membersState, memberLabel, createGroup
     <div className="col">
       <h3>{kind} groups</h3>
 
-      <div className="form-row">
-        <Field label="New group name">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === 'User' ? 'deployers' : 'web-tier'} />
-        </Field>
-        <button className="btn" disabled={!name} onClick={create}>
-          Create
-        </button>
-      </div>
+      {canWrite && (
+        <div className="form-row">
+          <Field label="New group name">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === 'User' ? 'deployers' : 'web-tier'} />
+          </Field>
+          <button className="btn" disabled={!name} onClick={create}>
+            Create
+          </button>
+        </div>
+      )}
 
       <AsyncBlock state={groupsState} empty="No groups yet.">
         <table className="grid">
@@ -118,35 +124,37 @@ function GroupColumn({ kind, groupsState, membersState, memberLabel, createGroup
         </table>
       </AsyncBlock>
 
-      <div className="subform">
-        <h4>Add a member</h4>
-        <div className="form-row">
-          <Field label="Group">
-            <select value={selGroup} onChange={(e) => setSelGroup(e.target.value)}>
-              <option value="">—</option>
-              {(groupsState.data || []).map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label={kind === 'User' ? 'User' : 'Server'}>
-            <select value={selMember} onChange={(e) => setSelMember(e.target.value)}>
-              <option value="">—</option>
-              {members.map((m) => (
-                <option key={m[idField]} value={m[idField]}>
-                  {memberLabel(m)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <button className="btn" disabled={!selGroup || !selMember} onClick={join}>
-            Add
-          </button>
+      {canWrite && (
+        <div className="subform">
+          <h4>Add a member</h4>
+          <div className="form-row">
+            <Field label="Group">
+              <select value={selGroup} onChange={(e) => setSelGroup(e.target.value)}>
+                <option value="">—</option>
+                {(groupsState.data || []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={kind === 'User' ? 'User' : 'Server'}>
+              <select value={selMember} onChange={(e) => setSelMember(e.target.value)}>
+                <option value="">—</option>
+                {members.map((m) => (
+                  <option key={m[idField]} value={m[idField]}>
+                    {memberLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <button className="btn" disabled={!selGroup || !selMember} onClick={join}>
+              Add
+            </button>
+          </div>
+          {error && <p className="error">{error}</p>}
         </div>
-        {error && <p className="error">{error}</p>}
-      </div>
+      )}
     </div>
   );
 }

@@ -25,6 +25,11 @@ func discardLogger() *slog.Logger {
 }
 
 func testAPI(t *testing.T) (http.Handler, *store.Store) {
+	srv, st := testAPIServer(t)
+	return srv.Handler(), st
+}
+
+func testAPIServer(t *testing.T) (*Server, *store.Store) {
 	t.Helper()
 	dsn := os.Getenv("SSHBROKER_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -36,8 +41,9 @@ func testAPI(t *testing.T) (http.Handler, *store.Store) {
 	}
 	t.Cleanup(st.Close)
 	if _, err := st.Pool.Exec(context.Background(),
-		`TRUNCATE audit_log, sessions, grants, user_group_members, server_group_members,
-		          user_groups, server_groups, user_public_keys, service_accounts, servers, users
+		`TRUNCATE admin_sessions, local_admins, audit_log, sessions, grants,
+		          user_group_members, server_group_members, user_groups, server_groups,
+		          user_public_keys, service_accounts, servers, users
 		 RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -45,7 +51,7 @@ func testAPI(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("new api: %v", err)
 	}
-	return srv.Handler(), st
+	return srv, st
 }
 
 func do(t *testing.T, h http.Handler, method, path, token string, body any) *httptest.ResponseRecorder {

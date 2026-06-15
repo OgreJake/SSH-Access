@@ -78,7 +78,7 @@ func TestSessionsToTerminate(t *testing.T) {
 	}
 
 	// Recording URL round-trips through the store and listing (ADR-011).
-	if err := st.SetSessionRecordingURL(ctx, bobSess, "http://localhost:4000/a/bob1"); err != nil {
+	if err := st.SetSessionRecordingURL(ctx, bobSess, "/a/bob1"); err != nil {
 		t.Fatalf("set recording url: %v", err)
 	}
 	sessions, err := st.ListRecentSessions(ctx, 50)
@@ -91,7 +91,7 @@ func TestSessionsToTerminate(t *testing.T) {
 			foundURL = s.RecordingURL
 		}
 	}
-	if foundURL != "http://localhost:4000/a/bob1" {
+	if foundURL != "/a/bob1" {
 		t.Fatalf("recording url not stored/listed, got %q", foundURL)
 	}
 }

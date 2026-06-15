@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { useAsync, Panel, AsyncBlock, fmtTime, downloadFile } from './common';
+import { useAsync, Panel, AsyncBlock, fmtTime, downloadFile, useCan } from './common';
 
 export default function Sessions() {
   const state = useAsync(() => api.listSessions(), []);
   const [notice, setNotice] = useState(null);
+  const can = useCan();
+  const canTerminate = can('sessions:terminate');
 
   async function terminate(s) {
     if (!window.confirm(`Terminate ${s.subject}'s active session on ${s.server}? The broker will kill it within a few seconds.`)) {
@@ -66,12 +68,17 @@ export default function Sessions() {
                 <td>{s.recording === 'full' ? <span className="tag">full</span> : '—'}</td>
                 <td>{s.ended_at ? fmtTime(s.ended_at) : <span className="pill ok">active</span>}</td>
                 <td className="row-actions">
-                  {!s.ended_at && (
+                  {!s.ended_at && canTerminate && (
                     <button className="btn sm danger" onClick={() => terminate(s)}>
                       Terminate
                     </button>
                   )}
                   {s.recording_url ? (
+                    // recording_url is a URI path (e.g. "/a/<id>"); window.open
+                    // resolves it against the current origin so the link works
+                    // wherever the SSHBroker is served from.
+                    // NOTE(future): once the broker + asciinema server sit behind
+                    // a shared NGINX proxy, confirm this path routes to asciinema.
                     <button
                       className="btn sm"
                       onClick={() => window.open(s.recording_url, '_blank', 'noopener,noreferrer')}

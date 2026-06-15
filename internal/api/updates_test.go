@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/yourorg/sshbroker/internal/store"
 )
@@ -264,6 +265,86 @@ func TestAPIGetRecording(t *testing.T) {
 	}
 	if rec := do(t, h2, "GET", "/api/v1/sessions/"+sess+"/recording", testToken, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("traversal ref should 404 (base=passwd not in dir), got %d", rec.Code)
+	}
+}
+
+func TestAPIGrantReviewLifecycle(t *testing.T) {
+	h, _ := testAPI(t)
+	ugid := createID(t, h, "POST", "/api/v1/user-groups", map[string]any{"name": "deployers"})
+	sgid := createID(t, h, "POST", "/api/v1/server-groups", map[string]any{"name": "web-tier"})
+
+	// Create with an explicit overdue review date.
+	gid := createID(t, h, "POST", "/api/v1/grants", map[string]any{
+		"subject_type": "user_group", "subject_id": ugid,
+		"target_type": "server_group", "target_id": sgid,
+		"principals": []string{"deploy"}, "max_ttl_seconds": 300, "exec": true,
+		"review_by": "2020-01-01",
+	})
+	getStatus := func() (string, *grantDTO) {
+		rec := do(t, h, "GET", "/api/v1/grants", testToken, nil)
+		var gs []grantDTO
+		_ = json.Unmarshal(rec.Body.Bytes(), &gs)
+		for i := range gs {
+			if gs[i].ID == gid {
+				return gs[i].ReviewStatus, &gs[i]
+			}
+		}
+		return "", nil
+	}
+	if st, g := getStatus(); st != "overdue" || g.ReviewBy == nil {
+		t.Fatalf("expected overdue with a date, got %q (%+v)", st, g)
+	}
+
+	// Recertify pushes it out to "ok".
+	rec := do(t, h, "POST", "/api/v1/grants/"+gid+"/recertify", testToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recertify: %d (%s)", rec.Code, rec.Body)
+	}
+	if st, _ := getStatus(); st != "ok" {
+		t.Fatalf("after recertify expected ok, got %q", st)
+	}
+
+	// A grant created without a date defaults to a future review (status ok).
+	gid2 := createID(t, h, "POST", "/api/v1/grants", map[string]any{
+		"subject_type": "user_group", "subject_id": ugid,
+		"target_type": "server_group", "target_id": sgid,
+		"principals": []string{"ec2-user"}, "max_ttl_seconds": 300, "exec": true,
+	})
+	rec = do(t, h, "GET", "/api/v1/grants", testToken, nil)
+	var gs []grantDTO
+	_ = json.Unmarshal(rec.Body.Bytes(), &gs)
+	var found *grantDTO
+	for i := range gs {
+		if gs[i].ID == gid2 {
+			found = &gs[i]
+		}
+	}
+	if found == nil || found.ReviewBy == nil || found.ReviewStatus != "ok" {
+		t.Fatalf("defaulted grant should have a future review date, got %+v", found)
+	}
+
+	// Recertify of an unknown grant → 404.
+	if rec := do(t, h, "POST", "/api/v1/grants/00000000-0000-0000-0000-000000000000/recertify", testToken, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("recertify unknown: %d, want 404", rec.Code)
+	}
+}
+
+func TestReviewStatus(t *testing.T) {
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	mk := func(s string) *time.Time { d, _ := time.Parse("2006-01-02", s); return &d }
+	cases := []struct {
+		in   *time.Time
+		want string
+	}{
+		{nil, "none"},
+		{mk("2026-06-10"), "overdue"},
+		{mk("2026-06-20"), "due_soon"},
+		{mk("2026-09-20"), "ok"},
+	}
+	for _, c := range cases {
+		if got := reviewStatus(c.in, now); got != c.want {
+			t.Errorf("reviewStatus(%v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

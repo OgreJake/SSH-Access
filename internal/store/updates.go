@@ -109,6 +109,7 @@ type UpdateGrantInput struct {
 	AllowExec  *bool
 	AllowSFTP  *bool
 	Recording  *string
+	ReviewBy   *time.Time
 }
 
 func (s *Store) UpdateGrant(ctx context.Context, id string, in UpdateGrantInput) error {
@@ -134,6 +135,9 @@ func (s *Store) UpdateGrant(ctx context.Context, id string, in UpdateGrantInput)
 	}
 	if in.Recording != nil {
 		b.add("recording=$%d::recording_policy", *in.Recording)
+	}
+	if in.ReviewBy != nil {
+		b.add("review_by=$%d", *in.ReviewBy)
 	}
 	return s.execUpdate(ctx, "grants", b, id)
 }

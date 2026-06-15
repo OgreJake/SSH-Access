@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { useAsync, Panel, AsyncBlock, Field, useForm, csv } from './common';
+import { useAsync, Panel, AsyncBlock, Field, useForm, csv, useCan } from './common';
 
 export default function Servers() {
   const state = useAsync(() => api.listServers(), []);
   const [notice, setNotice] = useState(null);
   const [editing, setEditing] = useState(null);
+  const can = useCan();
+  const canWrite = can('servers:write');
 
   async function remove(s) {
     if (
@@ -31,12 +33,14 @@ export default function Servers() {
     >
       {notice && <p className="notice">{notice}</p>}
 
-      <CreateServer
-        onCreated={() => {
-          setNotice('Server created.');
-          state.reload();
-        }}
-      />
+      {canWrite && (
+        <CreateServer
+          onCreated={() => {
+            setNotice('Server created.');
+            state.reload();
+          }}
+        />
+      )}
 
       <AsyncBlock state={state} empty="No servers yet.">
         <table className="grid">
@@ -59,12 +63,18 @@ export default function Servers() {
                 <td>{s.access_mode}</td>
                 <td>{(s.allowed_principals || []).join(', ') || '—'}</td>
                 <td className="row-actions">
-                  <button className="btn sm" onClick={() => setEditing(editing && editing.id === s.id ? null : s)}>
-                    Edit
-                  </button>
-                  <button className="btn sm danger" onClick={() => remove(s)}>
-                    Remove
-                  </button>
+                  {canWrite ? (
+                    <>
+                      <button className="btn sm" onClick={() => setEditing(editing && editing.id === s.id ? null : s)}>
+                        Edit
+                      </button>
+                      <button className="btn sm danger" onClick={() => remove(s)}>
+                        Remove
+                      </button>
+                    </>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
                 </td>
               </tr>
             ))}

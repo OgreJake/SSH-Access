@@ -1,18 +1,8 @@
-// Thin client over the management API. The bearer token lives in sessionStorage
-// for the dev workflow (option A); a real login flow replaces this alongside MFA.
-
-const TOKEN_KEY = 'sshbroker_api_token';
-let token = sessionStorage.getItem(TOKEN_KEY) || '';
-
-export function getToken() {
-  return token;
-}
-
-export function setToken(t) {
-  token = t || '';
-  if (token) sessionStorage.setItem(TOKEN_KEY, token);
-  else sessionStorage.removeItem(TOKEN_KEY);
-}
+// Thin client over the management API. Authentication is cookie-based
+// (ADR-008): the break-glass login sets an httpOnly session cookie, and the
+// reverse proxy injects OIDC identity — both travel automatically with the
+// request, so the client sends no Authorization header. `credentials` ensures
+// the cookie is included.
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -23,11 +13,11 @@ export class ApiError extends Error {
 
 async function request(method, path, body) {
   const headers = {};
-  if (token) headers['Authorization'] = 'Bearer ' + token;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const res = await fetch(path, {
     method,
     headers,
+    credentials: 'same-origin',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -47,9 +37,7 @@ async function request(method, path, body) {
 
 // requestText returns the raw response body (for file downloads like recordings).
 async function requestText(method, path) {
-  const headers = {};
-  if (token) headers['Authorization'] = 'Bearer ' + token;
-  const res = await fetch(path, { method, headers });
+  const res = await fetch(path, { method, credentials: 'same-origin' });
   const text = await res.text();
   if (!res.ok) {
     let msg = res.statusText || 'request failed';
@@ -65,8 +53,11 @@ async function requestText(method, path) {
 }
 
 export const api = {
-  // Used to validate the token at sign-in.
-  ping: () => request('GET', '/api/v1/users'),
+  // Auth (ADR-008 Phase A).
+  whoami: () => request('GET', '/api/v1/auth/whoami'),
+  localLogin: (username, password) =>
+    request('POST', '/api/v1/auth/local/login', { username, password }),
+  localLogout: () => request('POST', '/api/v1/auth/local/logout'),
 
   listUsers: () => request('GET', '/api/v1/users'),
   createUser: (b) => request('POST', '/api/v1/users', b),
@@ -85,6 +76,7 @@ export const api = {
   createGrant: (b) => request('POST', '/api/v1/grants', b),
   updateGrant: (id, b) => request('PATCH', `/api/v1/grants/${id}`, b),
   deleteGrant: (id) => request('DELETE', `/api/v1/grants/${id}`),
+  recertifyGrant: (id) => request('POST', `/api/v1/grants/${id}/recertify`),
 
   listUserGroups: () => request('GET', '/api/v1/user-groups'),
   createUserGroup: (name) => request('POST', '/api/v1/user-groups', { name }),

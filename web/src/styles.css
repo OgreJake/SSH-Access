@@ -241,6 +241,49 @@ textarea {
 .btn.danger:hover {
   background: #f7d3d1;
 }
+.pill.review-ok {
+  background: var(--ok-bg, #e6f4ea);
+  color: var(--ok-ink, #1e7e34);
+}
+.pill.review-due_soon {
+  background: #fdf3d6;
+  color: #8a6d1b;
+}
+.pill.review-overdue {
+  background: #f7d3d1;
+  color: #a3271f;
+}
+.pill.review-none {
+  background: var(--off-bg, #eee);
+  color: var(--off-ink, #555);
+}
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.identity .who {
+  font-size: 13px;
+  color: var(--muted-ink, #555);
+}
+.identity .who .src {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--tag-bg, #eef);
+  color: var(--tag-ink, #335);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+}
+.gate-card .divider {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-ink, #888);
+  text-align: center;
+}
 
 /* Pills, tags */
 .pill {

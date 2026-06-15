@@ -90,3 +90,18 @@ func TestAsciinemaUploaderExec(t *testing.T) {
 		t.Fatal("expected error from failing uploader")
 	}
 }
+
+func TestToURIPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"http://localhost:4000/a/fake123", "/a/fake123"},
+		{"http://localhost:4000/a/fake123?t=10", "/a/fake123?t=10"},
+		{"https://rec.example.com/a/xyz#5", "/a/xyz#5"},
+		{"/a/already-a-path", "/a/already-a-path"},
+		{"not a url", "not a url"},
+	}
+	for _, c := range cases {
+		if got := toURIPath(c.in); got != c.want {
+			t.Errorf("toURIPath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

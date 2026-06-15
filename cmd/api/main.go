@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/yourorg/sshbroker/internal/api"
+	"github.com/yourorg/sshbroker/internal/auth"
+	"github.com/yourorg/sshbroker/internal/config"
 	"github.com/yourorg/sshbroker/internal/store"
 )
 
@@ -56,6 +58,30 @@ func run() error {
 	if dir := os.Getenv("SSHBROKER_RECORDING_DIR"); dir != "" {
 		apiSrv.SetRecordingDir(dir)
 		logger.Info("session-recording downloads enabled", "dir", dir)
+	}
+	apiSrv.SetReviewIntervalDays(config.ReviewIntervalDays())
+
+	authCfg := api.AuthConfig{
+		OIDCEmailHeader:   os.Getenv("SSHBROKER_OIDC_EMAIL_HEADER"),
+		OIDCGroupsHeader:  os.Getenv("SSHBROKER_OIDC_GROUPS_HEADER"),
+		OIDCGroupsDelim:   os.Getenv("SSHBROKER_OIDC_GROUPS_DELIM"),
+		ProxySecretHeader: os.Getenv("SSHBROKER_PROXY_SECRET_HEADER"),
+		ProxySecret:       os.Getenv("SSHBROKER_PROXY_SECRET"),
+		GroupRoles:        auth.ParseGroupRoleMapping(os.Getenv("SSHBROKER_OIDC_GROUP_ROLES")),
+		SessionAbsolute:   getenvDuration("SSHBROKER_ADMIN_SESSION_ABSOLUTE", 12*time.Hour),
+		SessionIdle:       getenvDuration("SSHBROKER_ADMIN_SESSION_IDLE", time.Hour),
+		CookieSecure:      os.Getenv("SSHBROKER_ADMIN_COOKIE_INSECURE") == "",
+		AllowBearerToken:  os.Getenv("SSHBROKER_ALLOW_BEARER_TOKEN") != "", // retired by default; opt-in for emergency/cutover
+	}
+	apiSrv.SetAuthConfig(authCfg)
+	if authCfg.AllowBearerToken {
+		logger.Warn("static bearer token auth is ENABLED (SSHBROKER_ALLOW_BEARER_TOKEN) — disable once SSO/break-glass is verified")
+	}
+	if authCfg.ProxySecret == "" {
+		logger.Warn("OIDC header trust disabled: SSHBROKER_PROXY_SECRET not set (break-glass + bearer only)")
+	} else {
+		logger.Info("management auth configured", "oidc_header_trust", true,
+			"group_role_mappings", len(authCfg.GroupRoles))
 	}
 
 	httpSrv := &http.Server{
@@ -101,6 +127,15 @@ func newLogger(level string) *slog.Logger {
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getenvDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
 	}
 	return fallback
 }

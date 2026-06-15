@@ -106,6 +106,7 @@ type GrantRow struct {
 	Exec        bool
 	SFTP        bool
 	Recording   string
+	ReviewBy    *time.Time
 }
 
 func (s *Store) ListGrants(ctx context.Context) ([]GrantRow, error) {
@@ -115,7 +116,7 @@ func (s *Store) ListGrants(ctx context.Context) ([]GrantRow, error) {
 		       g.target_type::text,
 		       COALESCE(s.hostname, sg.name, '') AS target_label,
 		       g.principals, EXTRACT(EPOCH FROM g.max_ttl)::bigint,
-		       g.allow_shell, g.allow_exec, g.allow_sftp, g.recording::text
+		       g.allow_shell, g.allow_exec, g.allow_sftp, g.recording::text, g.review_by
 		FROM grants g
 		LEFT JOIN users          u  ON g.subject_type = 'user'          AND g.subject_id = u.id
 		LEFT JOIN user_groups    ug ON g.subject_type = 'user_group'    AND g.subject_id = ug.id
@@ -133,7 +134,7 @@ func (s *Store) ListGrants(ctx context.Context) ([]GrantRow, error) {
 		var g GrantRow
 		var secs int64
 		if err := rows.Scan(&g.ID, &g.SubjectType, &g.Subject, &g.TargetType, &g.Target,
-			&g.Principals, &secs, &g.Shell, &g.Exec, &g.SFTP, &g.Recording); err != nil {
+			&g.Principals, &secs, &g.Shell, &g.Exec, &g.SFTP, &g.Recording, &g.ReviewBy); err != nil {
 			return nil, err
 		}
 		g.MaxTTL = time.Duration(secs) * time.Second

@@ -12,6 +12,11 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"crypto/rand"
+	"encoding/base64"
+
+	"github.com/yourorg/sshbroker/internal/auth"
+	"github.com/yourorg/sshbroker/internal/config"
 	"github.com/yourorg/sshbroker/internal/proxy"
 	"github.com/yourorg/sshbroker/internal/store"
 )
@@ -65,6 +70,10 @@ func runAdmin(args []string) error {
 		return cmdListGrants(ctx, st, rest)
 	case "terminate-session":
 		return cmdTerminateSession(ctx, st, rest)
+	case "recertify-grant":
+		return cmdRecertifyGrant(ctx, st, rest)
+	case "set-local-admin":
+		return cmdSetLocalAdmin(ctx, st, rest)
 	default:
 		adminUsage()
 		return fmt.Errorf("unknown admin command %q", cmd)
@@ -317,6 +326,7 @@ func cmdAddGrant(ctx context.Context, st *store.Store, args []string) error {
 	exec := fs.Bool("exec", false, "allow exec")
 	sftp := fs.Bool("sftp", false, "allow sftp")
 	recording := fs.String("recording", "metadata", "metadata|full")
+	reviewBy := fs.String("review-by", "", "recertification due date YYYY-MM-DD (default: now + review interval)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -332,12 +342,16 @@ func cmdAddGrant(ctx context.Context, st *store.Store, args []string) error {
 	if csv(*principals) == nil {
 		return errors.New("-principals is required (comma-separated)")
 	}
+	review, err := resolveReviewBy(*reviewBy)
+	if err != nil {
+		return err
+	}
 	id, err := st.CreateGrant(ctx, store.CreateGrantInput{
 		SubjectType: subjectType, SubjectID: subjectID,
 		TargetType: targetType, TargetID: targetID,
 		Principals: csv(*principals), MaxTTL: *ttl,
 		AllowShell: *shell, AllowExec: *exec, AllowSFTP: *sftp,
-		Recording: *recording,
+		Recording: *recording, ReviewBy: &review,
 	})
 	if err != nil {
 		return err
@@ -380,14 +394,71 @@ func cmdListGrants(ctx context.Context, st *store.Store, _ []string) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SUBJECT\tTARGET\tPRINCIPALS\tTTL\tCAPS")
+	fmt.Fprintln(tw, "SUBJECT\tTARGET\tPRINCIPALS\tTTL\tCAPS\tREVIEW\tSTATUS")
 	for _, g := range grants {
-		fmt.Fprintf(tw, "%s:%s\t%s:%s\t%s\t%s\t%s\n",
+		review := "—"
+		if g.ReviewBy != nil {
+			review = g.ReviewBy.Format("2006-01-02")
+		}
+		fmt.Fprintf(tw, "%s:%s\t%s:%s\t%s\t%s\t%s\t%s\t%s\n",
 			g.SubjectType, g.Subject, g.TargetType, g.Target,
-			strings.Join(g.Principals, ","), g.MaxTTL, caps(g))
+			strings.Join(g.Principals, ","), g.MaxTTL, caps(g), review, grantReviewStatus(g.ReviewBy, now))
 	}
 	return tw.Flush()
+}
+
+// grantReviewStatus mirrors the API's review classification (ADR-017).
+func grantReviewStatus(reviewBy *time.Time, now time.Time) string {
+	if reviewBy == nil {
+		return "none"
+	}
+	day := 24 * time.Hour
+	due := reviewBy.UTC().Truncate(day)
+	today := now.UTC().Truncate(day)
+	switch {
+	case due.Before(today):
+		return "overdue"
+	case due.Before(today.Add(14 * day)):
+		return "due-soon"
+	default:
+		return "ok"
+	}
+}
+
+// resolveReviewBy parses an optional YYYY-MM-DD date, defaulting to
+// now + the configured review interval (ADR-017).
+func resolveReviewBy(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Now().AddDate(0, 0, config.ReviewIntervalDays()), nil
+	}
+	t, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid -review-by %q (want YYYY-MM-DD): %w", raw, err)
+	}
+	return t, nil
+}
+
+func cmdRecertifyGrant(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("recertify-grant", flag.ContinueOnError)
+	id := fs.String("id", "", "grant id to recertify (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == "" {
+		return errors.New("-id is required")
+	}
+	review := time.Now().AddDate(0, 0, config.ReviewIntervalDays())
+	if err := st.UpdateGrant(ctx, *id, store.UpdateGrantInput{ReviewBy: &review}); err != nil {
+		return err
+	}
+	_ = st.AppendAudit(ctx, store.AuditEvent{
+		Actor: "admin-cli", EventType: "grant.recertified", Target: *id,
+		Detail: map[string]string{"grant_id": *id, "review_by": review.Format("2006-01-02")},
+	})
+	fmt.Printf("recertified grant %s; next review %s\n", *id, review.Format("2006-01-02"))
+	return nil
 }
 
 // ---------- helpers ----------
@@ -521,5 +592,45 @@ func cmdTerminateSession(ctx context.Context, st *store.Store, args []string) er
 		return err
 	}
 	fmt.Printf("flagged session %s for termination (the broker kills it on its next revocation poll)\n", *id)
+	return nil
+}
+
+func cmdSetLocalAdmin(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("set-local-admin", flag.ContinueOnError)
+	username := fs.String("username", "", "break-glass admin username (required)")
+	password := fs.String("password", "", "password (omit with -generate to auto-create one)")
+	generate := fs.Bool("generate", false, "generate a strong random password and print it once")
+	role := fs.String("role", "admin", "role for this admin")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *username == "" {
+		return errors.New("-username is required")
+	}
+	if !auth.RoleExists(*role) {
+		return fmt.Errorf("unknown role %q", *role)
+	}
+	pw := *password
+	if *generate {
+		buf := make([]byte, 24)
+		if _, err := rand.Read(buf); err != nil {
+			return err
+		}
+		pw = base64.RawURLEncoding.EncodeToString(buf)
+	}
+	if pw == "" {
+		return errors.New("provide -password or -generate")
+	}
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		return err
+	}
+	if _, err := st.UpsertLocalAdmin(ctx, *username, hash, *role); err != nil {
+		return err
+	}
+	fmt.Printf("break-glass admin %q set (role %s)\n", *username, *role)
+	if *generate {
+		fmt.Printf("generated password (store securely, shown once): %s\n", pw)
+	}
 	return nil
 }

@@ -332,16 +332,17 @@ func (a auditAdapter) uploadRecording(sessionID, path string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		url, err := a.uploader.Upload(ctx, path)
+		loc, err := a.uploader.Upload(ctx, path)
 		if err != nil {
 			a.logger.Error("asciinema upload failed", "session_id", sessionID, "err", err.Error())
 			return
 		}
-		if err := a.st.SetSessionRecordingURL(context.Background(), sessionID, url); err != nil {
+		recPath := toURIPath(loc)
+		if err := a.st.SetSessionRecordingURL(context.Background(), sessionID, recPath); err != nil {
 			a.logger.Error("store recording url", "session_id", sessionID, "err", err.Error())
 			return
 		}
-		a.logger.Info("recording uploaded", "session_id", sessionID, "url", url)
+		a.logger.Info("recording uploaded", "session_id", sessionID, "url", loc, "path", recPath)
 	}()
 }
 

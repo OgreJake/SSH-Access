@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, createContext, useContext } from 'react';
 
 // useAsync runs an async function on mount (and on demand via reload),
 // tracking loading/error/data.
@@ -100,4 +100,24 @@ export function toCSV(rows, columns) {
   const head = columns.map((c) => esc(c.label)).join(',');
   const body = rows.map((r) => columns.map((c) => esc(c.get(r))).join(',')).join('\n');
   return head + '\n' + body + '\n';
+}
+
+// --- Permissions (ADR-020) ---
+// The current principal's permission set, provided at the app root from
+// /auth/whoami, lets components hide controls the user cannot use.
+const PermsContext = createContext({ permissions: [], subject: '', source: '', roles: [] });
+
+export function PermsProvider({ value, children }) {
+  return <PermsContext.Provider value={value}>{children}</PermsContext.Provider>;
+}
+
+export function useIdentity() {
+  return useContext(PermsContext);
+}
+
+// useCan returns a predicate can(permission) for conditional rendering.
+export function useCan() {
+  const { permissions } = useContext(PermsContext);
+  const set = new Set(permissions || []);
+  return (perm) => set.has(perm);
 }
