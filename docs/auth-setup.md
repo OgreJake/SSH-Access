@@ -25,7 +25,7 @@ three invariants — if any one is missing, identity can be forged:
 ## Roles
 
 Identity → role is driven by Entra group membership via
-`SSHBROKER_OIDC_GROUP_ROLES` (e.g. `sg-broker-admins:admin,sg-broker-audit:auditor`).
+`SSHBROKER_OIDC_GROUP_ROLES` (e.g. `<group-guid>:admin,<group-guid>:auditor`).
 Built-in roles:
 
 - `admin` — all permissions.
@@ -34,6 +34,25 @@ Built-in roles:
 Effective permissions are the union over the admin's mapped groups. An
 authenticated user whose groups map to no role can sign in but can do nothing
 (every action returns 403) — map at least one group to a role.
+
+### Getting group/role values into the token (Entra)
+
+Group membership is **not** an OAuth scope — requesting `scope=...groups`
+fails with `AADSTS650053`. Choose one of:
+
+- **Groups claim:** App registration → Token configuration → Add groups claim →
+  Security groups → emit in the ID token. The claim contains group **object IDs
+  (GUIDs)** for cloud-native groups, so `SSHBROKER_OIDC_GROUP_ROLES` keys must be
+  those GUIDs. (Display names only appear for on-prem-synced groups.)
+- **App Roles (recommended for a small role set):** define `admin` and `auditor`
+  app roles on the app registration and assign groups/users to them. Entra emits
+  a `roles` claim with those exact strings; set `oidc_groups_claim = "roles"` in
+  oauth2-proxy and use `SSHBROKER_OIDC_GROUP_ROLES=admin:admin,auditor:auditor`.
+  This also avoids the groups-overage case (users in many groups otherwise get a
+  Graph link instead of the list).
+
+Either way the broker simply maps whatever strings arrive in the groups header
+to roles.
 
 ## Broker API environment
 
@@ -46,6 +65,9 @@ SSHBROKER_RECORDING_DIR=/var/lib/sshbroker/recordings
 # OIDC header trust
 SSHBROKER_PROXY_SECRET=<long-random-shared-with-oauth2-proxy>
 SSHBROKER_OIDC_GROUP_ROLES=sg-broker-admins:admin,sg-broker-audit:auditor
+# The value oauth2-proxy puts in X-Auth-Request-Email becomes the admin's
+# subject in audit/whoami. With oidc_email_claim=preferred_username that is the
+# user's UPN (e.g. alice@contoso.com).
 # Header names default to the oauth2-proxy conventions below; override if needed:
 # SSHBROKER_OIDC_EMAIL_HEADER=X-Auth-Request-Email
 # SSHBROKER_OIDC_GROUPS_HEADER=X-Auth-Request-Groups
@@ -91,9 +113,17 @@ set_xauthrequest         = true     # sets X-Auth-Request-Email, -User, -Groups
 pass_access_token        = false
 pass_authorization_header = false
 
-# Request the groups claim from Entra (configure a groups claim on the app
-# registration; for many groups use Graph/OBO — out of scope here).
-scope                    = "openid email profile groups"
+# Group membership is delivered as a token CLAIM, not a scope. Do NOT add
+# "groups" to scope (Entra rejects it: AADSTS650053). Configure it on the app
+# registration instead (see below). oauth2-proxy reads it via oidc_groups_claim.
+scope                    = "openid email profile"
+# oidc_groups_claim     = "groups"   # default; set to "roles" if using App Roles
+
+# Entra frequently omits the standard "email" claim (only set when the account
+# has a mailbox/mail attribute), which makes the callback fail with
+# "neither the id_token nor the profileURL set an email". Point oauth2-proxy at
+# a claim Entra always emits — the UPN via preferred_username:
+oidc_email_claim         = "preferred_username"
 
 upstreams                = ["http://127.0.0.1:8081"]
 
@@ -148,6 +178,13 @@ server {
         proxy_set_header X-Real-IP        $remote_addr;
         proxy_set_header X-Scheme         $scheme;
         proxy_set_header X-Auth-Request-Redirect $request_uri;
+
+        # The post-login session cookie (it encodes the OIDC tokens; larger with
+        # a groups claim) can exceed the default proxy buffer, producing a 502 on
+        # /oauth2/callback right after a successful AuthSuccess. Give it room:
+        proxy_buffer_size       16k;
+        proxy_buffers           8 16k;
+        proxy_busy_buffers_size 32k;
     }
 
     # The SPA (static files). The UI calls /api/v1/auth/whoami on load to decide
@@ -179,3 +216,45 @@ Notes:
    spoofed `X-Auth-Request-Email` but no `X-Proxy-Auth` → 401.
 4. **Audit:** mutations appear in the audit log with your real identity as actor;
    `auth.login` is recorded on sign-in.
+
+## Sign-out
+
+The UI routes sign-out by identity source:
+
+- **Break-glass:** calls `POST /api/v1/auth/local/logout`, which revokes the
+  server-side session, then reloads.
+- **SSO:** navigates to oauth2-proxy's `/oauth2/sign_out?rd=/`, which clears the
+  `_oauth2_proxy` cookie. The next request is unauthenticated, so the SPA shows
+  the sign-in screen.
+
+Note that clearing the proxy session does **not** end the user's Entra SSO
+session — so "Sign in with SSO" may immediately re-authenticate without a
+prompt (this is normal SSO single-sign-on behavior). For full federated logout
+(also signing out of Entra), point the proxy sign-out at the provider's
+end-session endpoint and whitelist its domain in oauth2-proxy:
+
+```ini
+# oauth2-proxy.cfg
+whitelist_domains = ["login.microsoftonline.com"]
+```
+then redirect to
+`/oauth2/sign_out?rd=https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/logout`.
+
+## Troubleshooting
+
+- **`AADSTS650053 ... scope 'groups'`** — remove `groups` from `scope`; deliver
+  groups as a claim or via App Roles (see above).
+- **`neither the id_token nor the profileURL set an email`** — Entra didn't emit
+  `email`; set `oidc_email_claim = "preferred_username"`.
+- **502 on `/oauth2/callback` right after `AuthSuccess`** — the session cookie
+  exceeds NGINX's proxy buffer. Check the NGINX *error* log for
+  `upstream sent too big header`; raise `proxy_buffer_size`/`proxy_buffers` on the
+  `/oauth2/` location (above) and/or shrink the session (App Roles, or
+  `session_store_type = "redis"`).
+- **Signed in but every action is 403** — authentication works but the user's
+  groups map to no role. Verify `X-Auth-Request-Groups` is populated and that
+  `SSHBROKER_OIDC_GROUP_ROLES` keys match the claim values exactly (group GUIDs,
+  or App Role strings).
+- **401 with spoofed identity headers** — expected; the API trusts OIDC headers
+  only with a matching `X-Proxy-Auth`. If legitimate logins 401, confirm NGINX
+  forwards `X-Proxy-Auth` on `/api/` and it matches `SSHBROKER_PROXY_SECRET`.

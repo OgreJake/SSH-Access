@@ -52,13 +52,19 @@ export default function App() {
   }
 
   async function signOut() {
+    if (id.source === 'oidc') {
+      // The SSO session lives in oauth2-proxy, not the broker — clear it at the
+      // proxy's sign-out endpoint. (Federated logout from Entra itself is
+      // optional; see docs/auth-setup.md.) This is a full browser navigation,
+      // so the redirect is allowed.
+      window.location.href = '/oauth2/sign_out?rd=' + encodeURIComponent('/');
+      return;
+    }
     try {
       await api.localLogout();
     } catch {
       /* ignore */
     }
-    // For SSO sessions the proxy holds the Entra session; reloading re-checks
-    // auth and (behind the proxy) would redirect to sign-in.
     window.location.reload();
   }
 
