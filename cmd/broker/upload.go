@@ -57,14 +57,11 @@ func parseAsciinemaURL(output, serverURL string) (string, error) {
 }
 
 // toURIPath reduces a full URL to its path (plus query/fragment). We store only
-// the path so the UI can resolve recordings against whatever origin the
-// SSHBroker is currently served from, rather than a hardcoded host.
-//
-// NOTE(future): the broker and the asciinema server will eventually sit behind
-// a shared NGINX reverse proxy. The path asciinema uses today ("/a/<id>") is
-// assumed to be reachable under that same origin. When the proxy routing is
-// finalized (e.g. asciinema mounted under a sub-path or rewritten), this
-// path-only assumption — and possibly a prefix rewrite — must be revisited.
+// the path; the API prepends the configured asciinema viewer origin
+// (SSHBROKER_ASCIINEMA_PUBLIC_URL) at read time, so the stored value stays
+// origin-independent and existing rows survive a viewer move (ADR-011). The
+// asciinema server now lives on its own subdomain behind oauth2-proxy; uploads
+// still target the local server, only the viewing origin differs.
 func toURIPath(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Path == "" {

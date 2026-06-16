@@ -59,6 +59,10 @@ func run() error {
 		apiSrv.SetRecordingDir(dir)
 		logger.Info("session-recording downloads enabled", "dir", dir)
 	}
+	if base := os.Getenv("SSHBROKER_ASCIINEMA_PUBLIC_URL"); base != "" {
+		apiSrv.SetRecordingURLBase(base)
+		logger.Info("asciinema viewer origin set", "url", base)
+	}
 	apiSrv.SetReviewIntervalDays(config.ReviewIntervalDays())
 
 	authCfg := api.AuthConfig{

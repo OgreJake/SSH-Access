@@ -49,6 +49,7 @@ type Server struct {
 	token              string
 	recordingDir       string
 	reviewIntervalDays int
+	recordingURLBase   string
 	authCfg            AuthConfig
 	loginLimiter       *loginLimiter
 }
@@ -127,6 +128,12 @@ func (s *Server) SetReviewIntervalDays(days int) {
 // SetRecordingDir enables session-recording downloads from the given directory
 // (ADR-011). The API and broker are expected to share this filesystem path.
 func (s *Server) SetRecordingDir(dir string) { s.recordingDir = dir }
+
+// SetRecordingURLBase sets the public origin of the asciinema viewer (ADR-011),
+// e.g. https://ascii-viewer.disdev.net. The API prepends it to the stored
+// recording path so the UI opens the recording at that origin. Empty keeps the
+// stored value as-is (resolved against the current origin).
+func (s *Server) SetRecordingURLBase(base string) { s.recordingURLBase = base }
 
 // Handler builds the routed, middleware-wrapped HTTP handler.
 func (s *Server) Handler() http.Handler {

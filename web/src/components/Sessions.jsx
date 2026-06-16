@@ -74,11 +74,9 @@ export default function Sessions() {
                     </button>
                   )}
                   {s.recording_url ? (
-                    // recording_url is a URI path (e.g. "/a/<id>"); window.open
-                    // resolves it against the current origin so the link works
-                    // wherever the SSHBroker is served from.
-                    // NOTE(future): once the broker + asciinema server sit behind
-                    // a shared NGINX proxy, confirm this path routes to asciinema.
+                    // recording_url is the absolute asciinema viewer URL the API
+                    // assembles from SSHBROKER_ASCIINEMA_PUBLIC_URL + stored path
+                    // (ADR-011); the viewer lives on its own subdomain behind SSO.
                     <button
                       className="btn sm"
                       onClick={() => window.open(s.recording_url, '_blank', 'noopener,noreferrer')}

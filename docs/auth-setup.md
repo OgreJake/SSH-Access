@@ -159,9 +159,10 @@ server {
     # --- SSO-protected management API ---
     location /api/ {
         auth_request /oauth2/auth;
-        error_page 401 = /oauth2/sign_in;
+        # NB: do NOT set error_page 401 -> /oauth2/sign_in here. API calls (XHR)
+        # must get a plain 401 so the SPA shows its own sign-in; a redirect to
+        # Entra is blocked cross-origin by the browser.
 
-        # Map oauth2-proxy's auth_request response headers onto the upstream.
         auth_request_set $email  $upstream_http_x_auth_request_email;
         auth_request_set $groups $upstream_http_x_auth_request_groups;
         proxy_set_header X-Auth-Request-Email  $email;
@@ -169,6 +170,20 @@ server {
         proxy_set_header X-Proxy-Auth "<SAME_SECRET_AS_SSHBROKER_PROXY_SECRET>";
 
         proxy_pass http://127.0.0.1:8081;
+    }
+
+    # Dedicated internal location for the auth_request subrequest. CRITICAL:
+    # drop the request body — oauth2-proxy's /oauth2/auth does not read a body,
+    # so forwarding a POST body here makes the subrequest hang until
+    # proxy_read_timeout (504), breaking POSTs like /api/v1/ssh-login/approve
+    # while GETs still work. Stripping the body makes POST auth behave like GET.
+    location = /oauth2/auth {
+        internal;
+        proxy_pass http://127.0.0.1:4180;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_read_timeout 5s;
     }
 
     # oauth2-proxy endpoints (/oauth2/start, /callback, /auth, /sign_in).
@@ -244,6 +259,50 @@ an unknown subject is auto-created **with no grants**, so an admin must still
 grant access before they can reach anything. SSH authorization is entirely the
 broker grant model — Entra groups play no part in SSH access.
 
+## Session recordings viewer (asciinema, separate subdomain)
+
+Recordings are served by the asciinema server on its own origin
+(`SSHBROKER_ASCIINEMA_PUBLIC_URL`, e.g. `https://ascii-viewer.disdev.net`). The
+broker still **uploads** over localhost (`asciinema upload … --server-url
+http://localhost:4000`, unchanged); only the **viewing** origin is the
+subdomain. The broker stores the recording path; the API prepends the public
+origin so the UI's "View recording" opens the subdomain directly.
+
+Recordings are output-only (ADR-011 does not capture raw keystrokes), but
+terminal output can still echo typed input and reveal sensitive data, so the
+viewer should sit behind the same SSO. Give the subdomain its own server block
+with the same `auth_request` protection:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name ascii-viewer.disdev.net;
+    # ssl_certificate ... ;
+
+    location / {
+        auth_request /oauth2/auth;
+        error_page 401 = /oauth2/sign_in;     # browser navigation here, so a redirect is fine
+        proxy_pass http://127.0.0.1:4000;     # the local asciinema server
+    }
+    location = /oauth2/auth {
+        internal;
+        proxy_pass http://127.0.0.1:4180;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+    }
+    location /oauth2/ {
+        proxy_pass http://127.0.0.1:4180;
+    }
+}
+```
+
+**Cookie-domain caveat:** the oauth2-proxy session cookie is only shared across
+hosts under a common parent domain. If the broker UI and the viewer live on
+different parent domains (e.g. an IP broker plus `*.disdev.net`), the viewer
+prompts for SSO separately. To get single sign-on across both, put the broker UI
+and the viewer under the same parent domain and set oauth2-proxy
+`cookie_domains = [".disdev.net"]` (and `whitelist_domains` accordingly).
+
 ## Sign-out
 
 The UI routes sign-out by identity source:
@@ -278,6 +337,10 @@ then redirect to
   `upstream sent too big header`; raise `proxy_buffer_size`/`proxy_buffers` on the
   `/oauth2/` location (above) and/or shrink the session (App Roles, or
   `session_store_type = "redis"`).
+- **Signed in, GET works but POST 504s** (e.g. `/api/v1/ssh-login/approve`) — the
+  `auth_request` subrequest is forwarding the POST body to `/oauth2/auth`, which
+  hangs until `proxy_read_timeout`. Add a dedicated `location = /oauth2/auth`
+  with `proxy_pass_request_body off;` and `proxy_set_header Content-Length "";`.
 - **Signed in but every action is 403** — authentication works but the user's
   groups map to no role. Verify `X-Auth-Request-Groups` is populated and that
   `SSHBROKER_OIDC_GROUP_ROLES` keys match the claim values exactly (group GUIDs,

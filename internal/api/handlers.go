@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -527,9 +528,24 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	out := make([]dto, 0, len(sessions))
 	for _, x := range sessions {
 		out = append(out, dto{x.ID, x.StartedAt, x.EndedAt, x.SubjectLabel, x.ServerLabel, x.Login,
-			x.SourceIP, x.CertSerial, x.BytesIn, x.BytesOut, x.ExitStatus, x.Recording, x.RecordingRef != "", x.RecordingURL})
+			x.SourceIP, x.CertSerial, x.BytesIn, x.BytesOut, x.ExitStatus, x.Recording, x.RecordingRef != "",
+			joinRecordingURL(s.recordingURLBase, x.RecordingURL)})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// joinRecordingURL turns the stored recording path (e.g. "/a/<id>", ADR-011)
+// into the absolute URL the browser should open, using the configured asciinema
+// viewer origin. An empty base leaves the value unchanged (back-compat), and a
+// value that is already absolute is passed through.
+func joinRecordingURL(base, stored string) string {
+	if stored == "" || base == "" {
+		return stored
+	}
+	if strings.HasPrefix(stored, "http://") || strings.HasPrefix(stored, "https://") {
+		return stored
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(stored, "/")
 }
 
 // terminateSession flags an active session for the broker to kill (ADR-016).

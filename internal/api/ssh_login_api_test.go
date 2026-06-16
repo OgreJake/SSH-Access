@@ -118,3 +118,18 @@ func TestSSHLoginApprovalRejections(t *testing.T) {
 		t.Fatalf("unknown code info: %d want 404", rec.Code)
 	}
 }
+
+func TestJoinRecordingURL(t *testing.T) {
+	cases := []struct{ base, stored, want string }{
+		{"https://ascii-viewer.disdev.net", "/a/abc", "https://ascii-viewer.disdev.net/a/abc"},
+		{"https://ascii-viewer.disdev.net/", "/a/abc", "https://ascii-viewer.disdev.net/a/abc"},
+		{"", "/a/abc", "/a/abc"},                                        // no base → unchanged (back-compat)
+		{"https://v.example", "", ""},                                   // no recording → empty
+		{"https://v.example", "https://other/a/x", "https://other/a/x"}, // already absolute → passthrough
+	}
+	for _, c := range cases {
+		if got := joinRecordingURL(c.base, c.stored); got != c.want {
+			t.Errorf("joinRecordingURL(%q,%q)=%q want %q", c.base, c.stored, got, c.want)
+		}
+	}
+}
