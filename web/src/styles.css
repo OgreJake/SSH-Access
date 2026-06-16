@@ -284,6 +284,23 @@ textarea {
   color: var(--muted-ink, #888);
   text-align: center;
 }
+.gate-card .kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 12px 0;
+  font-size: 14px;
+}
+.gate-card .kv dt {
+  color: var(--muted-ink, #777);
+}
+.gate-card .kv dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.small {
+  font-size: 12px;
+}
 
 /* Pills, tags */
 .pill {

@@ -28,3 +28,15 @@ func HashSessionToken(token string) []byte {
 	h := sha256.Sum256([]byte(token))
 	return h[:]
 }
+
+// NewLoginCode returns a fresh opaque one-time SSH-login code (embedded in the
+// approval URL) and its SHA-256 storage hash (ADR-021). Like session tokens,
+// only the hash is persisted.
+func NewLoginCode() (code string, hash []byte, err error) {
+	return NewSessionToken()
+}
+
+// HashLoginCode returns the storage hash for a presented SSH-login code.
+func HashLoginCode(code string) []byte {
+	return HashSessionToken(code)
+}

@@ -217,6 +217,33 @@ Notes:
 4. **Audit:** mutations appear in the audit log with your real identity as actor;
    `auth.login` is recorded on sign-in.
 
+## SSH access: browser SSO/MFA (ADR-021, Phase B)
+
+Human SSH logins authenticate through the browser — no key, no client install.
+Set `SSHBROKER_SSH_LOGIN_URL_BASE` to the broker's public origin (the same host
+as the UI, e.g. `https://broker.example.com`) to enable it; unset means
+public-key only.
+
+Flow: the user runs `ssh alice+web01@broker`. The broker prints a URL like
+`https://broker.example.com/ssh-login?code=…` and waits. The user opens it; the
+page is the SPA's approval screen, which authenticates them via oauth2-proxy
+(reusing the SSO/login you set up above — if they have no session it bounces
+through `/oauth2/start` and back), shows the target and source IP, and offers
+**Approve**/**Deny**. On approval the broker correlates and the SSH handshake
+completes. The request is single-use and expires after
+`SSHBROKER_SSH_LOGIN_TIMEOUT` (default 2m); each connection re-authenticates.
+
+No new NGINX is needed: `/ssh-login` is served by the SPA `location /`, and its
+`/api/v1/ssh-login*` calls ride the existing `/api/` block (so they get the
+trusted-header treatment). Service accounts and any user with a registered key
+continue to authenticate by key and are never prompted.
+
+Identity & authorization: the approved Entra subject (the `X-Auth-Request-Email`
+UPN) resolves to a broker user. With `SSHBROKER_SSH_JIT_PROVISION` (default on)
+an unknown subject is auto-created **with no grants**, so an admin must still
+grant access before they can reach anything. SSH authorization is entirely the
+broker grant model — Entra groups play no part in SSH access.
+
 ## Sign-out
 
 The UI routes sign-out by identity source:

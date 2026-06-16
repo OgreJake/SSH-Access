@@ -113,16 +113,17 @@ Authentication spans **two distinct surfaces** with different users, risk, and m
 **Break-glass local admin.**
 - A single local admin for when Entra is **unreachable or misconfigured**. Because the OIDC proxy itself cannot authenticate anyone when Entra is down, break-glass **bypasses the proxy**: a separate NGINX location/port routes to a **broker-native local login** — password (**argon2id**-hashed, stored in DB), **rate-limited** — that issues a **broker-managed server-side opaque session** (httpOnly, Secure, SameSite cookie) with absolute + idle timeouts and real logout/revocation. This is the **only** place the broker handles a password or keeps its own session table. The account holds the `admin` role, every use is **audited and alerted**, the network location is restricted, and a separate second factor (TOTP) is a recommended hardening follow-up.
 
-**SSH access path (Phase B) — browser SSO/MFA, default keyless via short-lived cert.**
-- **Default (cert-via-helper):** a small **login helper** opens the user's browser, performs **Entra OIDC + MFA**, and the broker (acting as a **user-facing CA**, distinct from the target CA of ADR-001/006) issues a **short-lived user SSH certificate** (default 8–12h, configurable) into the user's `ssh-agent`. The SSH front door trusts this user-CA and authenticates connections by that cert, mapping its encoded identity to the user record. The **cert TTL is the "log in once" window**: until it expires, `ssh login+host@broker` to any number of targets just works — no permanent keys, no re-prompt per connection.
-- **Fallback (no helper):** stock-`ssh` **keyboard-interactive** browser flow — the broker presents a URL, the user completes OIDC + MFA in the browser, and the handshake completes. Works with zero client tooling but **re-prompts on every new connection** (no persistent client credential to reuse).
-- **Registered public keys remain an available login style** and are **mandatory for service accounts**, which are **MFA-exempt** so automation (Ansible, etc.) never hits a browser prompt. Browser SSO/MFA is the **default for human interactive users**.
+**SSH access path (Phase B) — browser SSO/MFA per connection, no client install, no user certificate.**
+- **Human interactive default (keyboard-interactive browser flow):** on `ssh login+host@broker`, the front door offers `keyboard-interactive` and presents a short URL + one-time code; the user opens it in any browser, authenticates through the existing oauth2-proxy (Entra OIDC, MFA enforced by **Entra Conditional Access**), and approves. The broker correlates the approval to the waiting connection and completes the handshake. **Per connection by design** — there is no persisted client credential and no "log in once" window; each new SSH connection re-authenticates. Nothing is installed on the user's device (stock `ssh` only). Mechanism detail in **ADR-021**.
+- **No user-facing CA.** Because the human path presents neither a key nor a certificate, the design issues no user certificate and needs **no second CA** — the only certificates in the system remain the broker→target certs signed by the target CA (ADR-001/006). (This simplifies the earlier "cert-via-helper" proposal, which was dropped because it required client software and an ssh-agent.)
+- **Registered public keys remain an available login style** and are **mandatory for service accounts**, which are **MFA-exempt** so automation (Ansible, etc.) never hits a browser prompt. The front door advertises `publickey,keyboard-interactive`: service-account/key users authenticate by key; human users fall through to the browser flow.
+- **Identity → broker user (ADR-021):** the authenticated Entra identity (email/UPN) resolves to a broker user; SSH **authorization stays entirely on the broker grant model** (ADR-010/019). Entra **groups do not drive SSH access** (they drive only management-plane RBAC, ADR-020). Unknown users are JIT-provisioned with **no grants** (config-gated), so they still reach nothing until an admin grants access.
 
 **Phasing.**
 - **Phase A** (build first): management-plane OIDC-via-proxy + break-glass local login + RBAC (ADR-020) + management-action audit (closes the ADR-017 reviewer-attribution gap). **IMPLEMENTED** — see `docs/auth-setup.md`. Identity-extraction middleware (break-glass session cookie / trusted OIDC headers gated on the proxy shared secret / transitional bearer), per-route permission enforcement, `auth/local/login`+`logout`+`whoami`, argon2id break-glass credentials with rate-limiting, server-side sessions (absolute+idle), blanket management-mutation audit with real identity, the React sign-in (SSO + break-glass) with role-aware control hiding, and the static bearer token retired by default (opt-in `SSHBROKER_ALLOW_BEARER_TOKEN`).
-- **Phase B**: SSH-path browser SSO/MFA — user-facing CA + signer, the login-helper and its cert-issuance endpoint (behind the OIDC proxy), front-door cert authentication, and the keyboard-interactive fallback. Detailed in a Phase B design before build.
+- **Phase B**: SSH-path browser SSO/MFA via the keyboard-interactive correlation flow (ADR-021): front-door `keyboard-interactive` handler, the device-code-style pending-login store shared with the API, the approval endpoint behind oauth2-proxy, and JIT user resolution. **No CA, signer, helper, or agent.**
 
-**Consequences.** Header-trust depends on the loopback-bind + header-strip + shared-secret invariants — these are the auth boundary and must hold in deployment. Break-glass is a deliberate, compensating-control-wrapped bypass. Phase B introduces a **second CA** (user→broker auth) separate from the broker→target CA; key custody follows the KMS approach (ADR-006) with its own key. Authorization for SSH is unchanged (grants/principals, ADR-010/019); only *how the user authenticates to the broker* changes.
+**Consequences.** Header-trust depends on the loopback-bind + header-strip + shared-secret invariants — these are the auth boundary and must hold in deployment. Break-glass is a deliberate, compensating-control-wrapped bypass. SSH authorization is unchanged (grants/principals, ADR-010/019); only *how the human authenticates to the broker* changes. The per-connection browser step is an accepted usability cost in exchange for zero client install and re-auth on every connection.
 
 ### ADR-010 — RBAC via group-to-group grants
 **Status:** ACCEPTED
@@ -248,7 +249,30 @@ The permission set is deliberately granular so additional roles (e.g. a server-o
 
 **Audit.** Every management **mutation** now writes an audit event with the **real admin identity** (Entra email, or `break-glass:<name>`) as actor, plus action and resource. This closes the ADR-017 reviewer-attribution gap and provides general management-plane accountability.
 
-**Status update:** **IMPLEMENTED** in Phase A (migration 0007 `local_admins`+`admin_sessions`; `internal/auth` permission/role/mapping model; per-route `require()` enforcement). **Consequences.** New persistence: a break-glass admin credential and a break-glass session table (migrations). Role/permission definitions are built-in for Phase A with a config-driven Entra-group→role mapping; DB-defined custom roles are a later migration. The API gains identity-extraction middleware (trusted headers for OIDC, session cookie for break-glass) and permission-check middleware. The static bearer token is retired once this lands (kept only as a transitional/dev fallback if needed, behind config).
+**Status update:** **IMPLEMENTED** in Phase A (migration 0007 `local_admins`+`admin_sessions`; `internal/auth` permission/role/mapping model; per-route `require()` enforcement). **Consequences.** New persistence: a break-glass admin credential and a break-glass session table (migrations). Role/permission definitions are built-in for Phase A with a config-driven Entra-group→role mapping; DB-defined custom roles are a later migration.
+
+### ADR-021 — SSH browser SSO/MFA via keyboard-interactive correlation (CA-free)
+**Status:** ACCEPTED. ADR-008 Phase B mechanism. **IMPLEMENTED** — see `docs/auth-setup.md`. Migration 0008 `ssh_login_requests`; store create/lookup/approve/deny/poll/consume; API `GET /ssh-login` + `approve`/`deny` (SSO-only, audited); front-door `keyboard-interactive` callback advertised alongside `publickey`; broker `BrowserLogin` adapter with JIT user resolution (no grants); React `/ssh-login` approval page. Service accounts/keys remain publickey + MFA-exempt.
+
+**Decision.** Human SSH authentication uses a **device-authorization-style** flow with stock `ssh` and **no client software, no key, and no user certificate**. The user proves their Entra identity (with MFA) in a browser, out of band, and the broker correlates that to the waiting SSH connection.
+
+**Flow.**
+1. `ssh alice+web01@broker`. The front door advertises `publickey,keyboard-interactive`. Service accounts / registered keys authenticate via `publickey` and skip the rest (MFA-exempt). Human users have no accepted key, so auth falls through to `keyboard-interactive`.
+2. The broker creates a **pending login** (random one-time code + short expiry) in the database and prompts (non-echo, informational): *"To sign in, open https://broker.example.com/ssh-login?code=WXYZ-1234 and approve. Waiting…"*
+3. The user opens the URL. It is served by the **API behind oauth2-proxy**, so the request is already Entra-authenticated (email/groups via the trusted-header path from ADR-008). The page shows the connection details (code, source IP, target) and an **Approve** button.
+4. On approve, the API marks the pending login **authenticated**, recording the resolved Entra identity. (One-time code; approving binds that identity to that specific pending login.)
+5. The SSH side is **polling/blocking** on the pending login. On seeing it authenticated within the timeout, `keyboard-interactive` succeeds and the handshake completes; the broker proceeds exactly as today (target resolution ADR-019, authorization ADR-010, target-cert mint ADR-001/007, session + recording).
+6. The code is consumed (single use); timeout (~2 min) fails the auth cleanly.
+
+**Why the DB carries the pending login.** Two processes are involved: the **SSH broker** creates and waits on the pending login, while the **API** (behind oauth2-proxy, where the browser lands) marks it authenticated. They share state through Postgres — no new service. New table (next migration): `ssh_login_requests(id, code_hash, source_ip, requested_target, status, entra_subject, created_at, expires_at, consumed_at)`. Codes are stored hashed; lookups are by hash; single-use enforced by a conditional update.
+
+**Identity → broker user.** The approved Entra email/UPN resolves to a broker user. **JIT provisioning (config-gated):** an unknown authenticated user is auto-created with a stored `oidc_subject`/email and **no grants**, so they can authenticate but reach nothing until an admin grants access (admin setup still required; just no duplicate user management in Entra). Pre-provisioned-only mode (deny unknown) remains available via config.
+
+**Authorization boundary (unchanged).** Once the user is resolved, **SSH authorization is entirely the broker grant model** (ADR-010/019). Entra **groups play no part in SSH access** — they drive only management-plane RBAC (ADR-020). This keeps all SSH authz in the app, as decided in ADR-008/010.
+
+**MFA.** Enforced by **Entra Conditional Access** on the app; anyone completing the browser flow has satisfied MFA. Optionally verify an `amr`/`acr` claim at approval time as defense in depth (deferred).
+
+**Security properties & notes.** No persisted SSH session → re-auth per connection (a deliberate access-limiting choice). One-time, short-lived, hashed codes bound to a single pending login; approval shows source IP + target so the user can detect a mismatched/forged request before approving. The approval endpoint is only reachable through oauth2-proxy (same header-trust boundary as the rest of the management plane). No CA, signer, helper, or agent is introduced. **Deferred:** the cert-via-helper "log-in-once" variant (would require client software + a user CA), and `amr` claim verification. The API gains identity-extraction middleware (trusted headers for OIDC, session cookie for break-glass) and permission-check middleware. The static bearer token is retired once this lands (kept only as a transitional/dev fallback if needed, behind config).
 
 ---
 
@@ -343,7 +367,7 @@ ansible -> ProxyJump=svc-ansible@broker -> broker authn (service-account key)
 | ADR-005 | API + React web UI | ACCEPTED |
 | ADR-006 | CA key in AWS KMS (asymmetric); EC2 instance role; KMS envelope encryption for secret store | ACCEPTED |
 | ADR-007 | Tightly constrained short-lived certs | ACCEPTED |
-| ADR-008 | Entra OIDC (mgmt, via proxy) + browser SSO/MFA for SSH (cert-via-helper) + break-glass | ACCEPTED |
+| ADR-008 | Entra OIDC (mgmt, via proxy) + browser SSO/MFA for SSH (keyboard-interactive) + break-glass | ACCEPTED |
 | ADR-009 | Encryption in transit and at rest | ACCEPTED |
 | ADR-010 | RBAC via group-to-group grants | ACCEPTED |
 | ADR-011 | Metadata always; full recording opt-in | ACCEPTED |
@@ -356,3 +380,4 @@ ansible -> ProxyJump=svc-ansible@broker -> broker authn (service-account key)
 | ADR-018 | Account/session hardening + alerting + backups | ACCEPTED |
 | ADR-019 | Subject-addressed connections; broker derives target account from grant | ACCEPTED |
 | ADR-020 | Management-plane RBAC (roles + granular permissions) + sessions | ACCEPTED |
+| ADR-021 | SSH browser SSO/MFA via keyboard-interactive correlation (CA-free) | ACCEPTED |

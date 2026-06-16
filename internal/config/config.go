@@ -100,6 +100,18 @@ type Config struct {
 	AsciinemaServerURL string
 	// AsciinemaBin is the asciinema CLI to invoke (default "asciinema").
 	AsciinemaBin string
+
+	// BrowserLoginURLBase, when set, enables SSH browser SSO/MFA (ADR-021): the
+	// public origin of the broker UI/API behind oauth2-proxy, used to build the
+	// approval URL (e.g. https://broker.example.com). Empty disables the flow
+	// (publickey only).
+	BrowserLoginURLBase string
+	// BrowserLoginTimeout bounds how long the SSH front door waits for browser
+	// approval, and is also the one-time code's lifetime (default 2m).
+	BrowserLoginTimeout time.Duration
+	// JITProvision auto-creates a broker user (with no grants) for an unknown
+	// authenticated Entra subject on SSH login (default true).
+	JITProvision bool
 }
 
 // Load reads and validates configuration from the environment.
@@ -186,6 +198,15 @@ func Load() (*Config, error) {
 	c.RecordingDir = os.Getenv("SSHBROKER_RECORDING_DIR")
 	c.AsciinemaServerURL = os.Getenv("SSHBROKER_ASCIINEMA_SERVER_URL")
 	c.AsciinemaBin = getenv("SSHBROKER_ASCIINEMA_BIN", "asciinema")
+
+	c.BrowserLoginURLBase = os.Getenv("SSHBROKER_SSH_LOGIN_URL_BASE")
+	c.BrowserLoginTimeout = 2 * time.Minute
+	if v := os.Getenv("SSHBROKER_SSH_LOGIN_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			c.BrowserLoginTimeout = d
+		}
+	}
+	c.JITProvision = os.Getenv("SSHBROKER_SSH_JIT_PROVISION") != "false"
 
 	maxTTL := getenv("SSHBROKER_CERT_MAX_TTL", "5m")
 	c.CertMaxTTL, err = time.ParseDuration(maxTTL)

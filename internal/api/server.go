@@ -170,6 +170,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/audit/export", s.require(auth.PermAuditRead, s.exportAudit))
 	mux.HandleFunc("GET /api/v1/audit/verify", s.require(auth.PermAuditRead, s.verifyAudit))
 
+	// SSH browser-SSO approval (ADR-021): any authenticated SSO user may approve
+	// their own pending SSH login. Reached by the user's browser behind oauth2-proxy.
+	mux.HandleFunc("GET /api/v1/ssh-login", s.requireAuth(s.sshLoginInfo))
+	mux.HandleFunc("POST /api/v1/ssh-login/approve", s.requireAuth(s.sshLoginApprove))
+	mux.HandleFunc("POST /api/v1/ssh-login/deny", s.requireAuth(s.sshLoginDeny))
+
 	return s.recoverMW(s.resolvePrincipalMW(s.auditMW(mux)))
 }
 

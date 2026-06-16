@@ -347,3 +347,41 @@ func nullIfEmpty(s string) any {
 	}
 	return s
 }
+
+// SSOUser is the minimal identity resolved for an SSO/JIT SSH login (ADR-021).
+type SSOUser struct {
+	ID       string
+	Username string
+	Status   string
+}
+
+// GetUserBySubject resolves a broker user by its Entra subject (the email/UPN
+// injected by the proxy), matching on email or entra_oid. Returns ErrNotFound
+// when no user matches.
+func (s *Store) GetUserBySubject(ctx context.Context, subject string) (*SSOUser, error) {
+	var u SSOUser
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id::text, username, status::text FROM users
+		 WHERE email = $1 OR entra_oid = $1`, subject).
+		Scan(&u.ID, &u.Username, &u.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user by subject: %w", err)
+	}
+	return &u, nil
+}
+
+// JITCreateUser provisions a broker user for an authenticated Entra subject that
+// has no existing record (ADR-021). The user is created active with NO grants,
+// so they still cannot reach any target until an admin authorizes them. Safe
+// against the create race: a concurrent create resolves to the existing user.
+func (s *Store) JITCreateUser(ctx context.Context, subject string) (*SSOUser, error) {
+	email := subject
+	_, err := s.CreateUser(ctx, subject, &email, "entra", "active")
+	if err != nil && !IsConflict(err) {
+		return nil, err
+	}
+	return s.GetUserBySubject(ctx, subject)
+}

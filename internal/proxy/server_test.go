@@ -174,6 +174,57 @@ func startBroker(t *testing.T, auth Authenticator, authz Authorizer, iss *ca.Iss
 	return startBrokerWithAuditor(t, auth, authz, iss, NopAuditor)
 }
 
+// fakeBrowserLogin is a deterministic proxy.BrowserLogin for tests: it approves
+// after the first poll (or denies) and resolves to a fixed identity.
+type fakeBrowserLogin struct {
+	deny     bool
+	subject  string
+	identity *Identity
+}
+
+func (f *fakeBrowserLogin) Begin(context.Context, string, string) (string, string, error) {
+	return "req-1", "https://broker.test/ssh-login?code=test", nil
+}
+func (f *fakeBrowserLogin) Poll(context.Context, string) (string, string, error) {
+	if f.deny {
+		return "denied", "", nil
+	}
+	return "approved", f.subject, nil
+}
+func (f *fakeBrowserLogin) Consume(context.Context, string) (string, error) {
+	return f.subject, nil
+}
+func (f *fakeBrowserLogin) Resolve(context.Context, string) (*Identity, error) {
+	if f.identity == nil {
+		return nil, ErrUnauthorized
+	}
+	return f.identity, nil
+}
+
+func startBrokerBrowserLogin(t *testing.T, authz Authorizer, iss *ca.Issuer, bl BrowserLogin) (*Server, string) {
+	t.Helper()
+	srv, err := New(Config{
+		HostKeyPath:         genHostKey(t),
+		Authenticator:       NewMemoryAuthenticator(), // empty: no key matches, forces keyboard-interactive
+		Authorizer:          authz,
+		Issuer:              iss,
+		Logger:              discardLogger(),
+		BrowserLogin:        bl,
+		BrowserLoginTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New broker: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("broker listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+	return srv, ln.Addr().String()
+}
+
 func startBrokerWithAuditor(t *testing.T, auth Authenticator, authz Authorizer, iss *ca.Issuer, aud Auditor) (*Server, string) {
 	t.Helper()
 	srv, err := New(Config{
@@ -567,5 +618,75 @@ func TestBrokeredSessionRecording(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "target-exec: whoami") {
 		t.Fatalf("recording does not contain target output:\n%s", data)
+	}
+}
+
+// TestBrowserLoginEndToEnd: a human with no registered key authenticates via
+// keyboard-interactive browser SSO (ADR-021), and the resolved identity carries
+// through to a working brokered session.
+func TestBrowserLoginEndToEnd(t *testing.T) {
+	iss, caPub := newIssuer(t)
+	targetAddr, targetFP := startTargetServer(t, caPub)
+
+	authz, err := LoadTargets(writeTargets(t, "web01", targetAddr, targetFP, "alice", []string{"deploy"}, true, true, false))
+	if err != nil {
+		t.Fatalf("LoadTargets: %v", err)
+	}
+	bl := &fakeBrowserLogin{
+		subject:  "alice@contoso.com",
+		identity: &Identity{Subject: model.SubjectUser, ID: "alice", Label: "alice"},
+	}
+	srv, brokerAddr := startBrokerBrowserLogin(t, authz, iss, bl)
+
+	cfg := &ssh.ClientConfig{
+		User: "deploy+web01",
+		Auth: []ssh.AuthMethod{
+			ssh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
+				// Browser flow shows an instruction with no questions; ack with none.
+				return []string{}, nil
+			}),
+		},
+		HostKeyCallback: ssh.FixedHostKey(srv.HostPublicKey()),
+		Timeout:         10 * time.Second,
+	}
+	client, err := ssh.Dial("tcp", brokerAddr, cfg)
+	if err != nil {
+		t.Fatalf("dial broker (keyboard-interactive): %v", err)
+	}
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer sess.Close()
+	out, err := sess.Output("whoami-ish")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected output from target through browser-SSO session")
+	}
+}
+
+// TestBrowserLoginDenied: a denied approval fails authentication.
+func TestBrowserLoginDenied(t *testing.T) {
+	iss, _ := newIssuer(t)
+	authz := fixedAuthorizer{d: &Decision{}}
+	bl := &fakeBrowserLogin{deny: true}
+	srv, brokerAddr := startBrokerBrowserLogin(t, authz, iss, bl)
+
+	cfg := &ssh.ClientConfig{
+		User: "deploy+web01",
+		Auth: []ssh.AuthMethod{
+			ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) {
+				return []string{}, nil
+			}),
+		},
+		HostKeyCallback: ssh.FixedHostKey(srv.HostPublicKey()),
+		Timeout:         10 * time.Second,
+	}
+	if _, err := ssh.Dial("tcp", brokerAddr, cfg); err == nil {
+		t.Fatal("expected denied browser login to fail authentication")
 	}
 }

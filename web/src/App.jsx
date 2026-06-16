@@ -7,6 +7,7 @@ import Groups from './components/Groups';
 import Grants from './components/Grants';
 import Sessions from './components/Sessions';
 import Audit from './components/Audit';
+import SshLogin from './components/SshLogin';
 
 // Tabs gated on the read permission for that resource (ADR-020). Built-in admin
 // and auditor both read everything; this matters for future custom roles.
@@ -20,6 +21,15 @@ const TABS = [
 ];
 
 export default function App() {
+  // The SSH browser-SSO approval page is a standalone screen (ADR-021); it does
+  // its own auth via the /api calls rather than the admin whoami gate.
+  if (window.location.pathname === '/ssh-login') {
+    return <SshLogin />;
+  }
+  return <AdminApp />;
+}
+
+function AdminApp() {
   const [state, setState] = useState({ status: 'loading', identity: null });
   const [tab, setTab] = useState('users');
 

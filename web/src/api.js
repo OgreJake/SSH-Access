@@ -94,4 +94,9 @@ export const api = {
   listAudit: () => request('GET', '/api/v1/audit'),
   exportAudit: () => request('GET', '/api/v1/audit/export'),
   verifyAudit: () => request('GET', '/api/v1/audit/verify'),
+
+  // SSH browser-SSO approval (ADR-021).
+  sshLoginInfo: (code) => request('GET', '/api/v1/ssh-login?code=' + encodeURIComponent(code)),
+  sshLoginApprove: (code) => request('POST', '/api/v1/ssh-login/approve', { code }),
+  sshLoginDeny: (code) => request('POST', '/api/v1/ssh-login/deny', { code }),
 };

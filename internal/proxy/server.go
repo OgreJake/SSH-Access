@@ -28,6 +28,8 @@ type Server struct {
 	serverVersion    string
 	sessions         *sessionRegistry
 	recorder         Recorder
+	browserLogin     BrowserLogin
+	browserTimeout   time.Duration
 }
 
 // Config configures the Server.
@@ -41,6 +43,11 @@ type Config struct {
 	Logger           *slog.Logger
 	ServerVersion    string
 	Recorder         Recorder // optional; defaults to NopRecorder (ADR-011)
+	// BrowserLogin, when set, enables keyboard-interactive browser SSO/MFA for
+	// human users (ADR-021). BrowserLoginTimeout bounds how long the front door
+	// waits for approval (default 2m).
+	BrowserLogin        BrowserLogin
+	BrowserLoginTimeout time.Duration
 }
 
 // New loads the host key and constructs a Server.
@@ -78,6 +85,10 @@ func New(cfg Config) (*Server, error) {
 	if recorder == nil {
 		recorder = NopRecorder{}
 	}
+	browserTimeout := cfg.BrowserLoginTimeout
+	if browserTimeout <= 0 {
+		browserTimeout = 2 * time.Minute
+	}
 	return &Server{
 		hostSigner:       hostSigner,
 		auth:             cfg.Authenticator,
@@ -89,6 +100,8 @@ func New(cfg Config) (*Server, error) {
 		serverVersion:    version,
 		sessions:         newSessionRegistry(),
 		recorder:         recorder,
+		browserLogin:     cfg.BrowserLogin,
+		browserTimeout:   browserTimeout,
 	}, nil
 }
 
@@ -139,8 +152,68 @@ func (s *Server) serverConfig() *ssh.ServerConfig {
 			}}, nil
 		},
 	}
+	if s.browserLogin != nil {
+		cfg.KeyboardInteractiveCallback = s.keyboardInteractive
+	}
 	cfg.AddHostKey(s.hostSigner)
 	return cfg
+}
+
+// keyboardInteractive runs the browser SSO/MFA flow (ADR-021): create a pending
+// login, show the user the approval URL, then block until the browser approval
+// is observed (or timeout/denial). On approval the resolved Entra identity is
+// returned in the same Permissions shape as the public-key path.
+func (s *Server) keyboardInteractive(conn ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.browserTimeout)
+	defer cancel()
+	sourceIP := hostOnly(conn.RemoteAddr().String())
+
+	id, url, err := s.browserLogin.Begin(ctx, sourceIP, conn.User())
+	if err != nil {
+		s.logger.Error("browser login: begin", "remote", conn.RemoteAddr().String(), "err", err.Error())
+		return nil, ErrUnauthorized
+	}
+	// Display the approval URL (instruction only, no questions). The client
+	// prints it and waits for the auth result, which we send on return.
+	_, _ = challenge("", "sshbroker — browser sign-in required\r\n\r\n"+
+		"Open this URL to authenticate (with MFA) and approve this connection:\r\n\r\n"+
+		"  "+url+"\r\n\r\nWaiting for approval...\r\n", nil, nil)
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("browser login timed out", "remote", conn.RemoteAddr().String(), "request", conn.User())
+			return nil, ErrUnauthorized
+		case <-ticker.C:
+			status, _, err := s.browserLogin.Poll(ctx, id)
+			if err != nil {
+				return nil, ErrUnauthorized
+			}
+			switch status {
+			case "approved":
+				subject, err := s.browserLogin.Consume(ctx, id)
+				if err != nil {
+					return nil, ErrUnauthorized
+				}
+				ident, err := s.browserLogin.Resolve(ctx, subject)
+				if err != nil {
+					s.logger.Info("browser login: subject not authorized", "subject", subject)
+					return nil, ErrUnauthorized
+				}
+				s.logger.Info("browser login approved", "subject", subject, "user", ident.Label, "request", conn.User())
+				return &ssh.Permissions{Extensions: map[string]string{
+					"subject_type":  string(ident.Subject),
+					"subject_id":    ident.ID,
+					"subject_label": ident.Label,
+				}}, nil
+			case "denied", "expired":
+				s.logger.Info("browser login "+status, "remote", conn.RemoteAddr().String())
+				return nil, ErrUnauthorized
+			}
+		}
+	}
 }
 
 func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {

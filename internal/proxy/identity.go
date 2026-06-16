@@ -9,6 +9,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 
 	"golang.org/x/crypto/ssh"
@@ -34,6 +35,26 @@ type Identity struct {
 // implementation arrives in Phase 3; MemoryAuthenticator is the dev backend.
 type Authenticator interface {
 	AuthenticatePublicKey(key ssh.PublicKey) (*Identity, error)
+}
+
+// BrowserLogin drives the device-authorization-style SSH browser SSO/MFA flow
+// (ADR-021). It is implemented over the store + config by the broker, keeping
+// the proxy decoupled from both. When set, the front door offers
+// keyboard-interactive in addition to publickey; human users with no registered
+// key fall through to this browser flow.
+type BrowserLogin interface {
+	// Begin creates a pending login for the waiting connection and returns its
+	// id plus the approval URL to display to the user.
+	Begin(ctx context.Context, sourceIP, requestedTarget string) (id, approvalURL string, err error)
+	// Poll reports the current status: "pending", "approved", "denied", or
+	// "expired"; when approved it also returns the resolved Entra subject.
+	Poll(ctx context.Context, id string) (status, subject string, err error)
+	// Consume atomically claims an approved login (single use), returning the subject.
+	Consume(ctx context.Context, id string) (subject string, err error)
+	// Resolve maps an authenticated Entra subject to a broker Identity
+	// (JIT-provisioning per config). Returns ErrUnauthorized when the subject is
+	// unknown and JIT is disabled, or the user is not active.
+	Resolve(ctx context.Context, subject string) (*Identity, error)
 }
 
 func subjectType(s string) model.SubjectType { return model.SubjectType(s) }

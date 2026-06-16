@@ -153,15 +153,28 @@ func run() error {
 		logger.Info("asciinema upload enabled", "server", cfg.AsciinemaServerURL)
 	}
 
+	var browserLogin proxy.BrowserLogin
+	if cfg.BrowserLoginURLBase != "" {
+		browserLogin = browserLoginAdapter{
+			st: st, logger: logger, baseURL: cfg.BrowserLoginURLBase,
+			loginTTL: cfg.BrowserLoginTimeout, jit: cfg.JITProvision,
+		}
+		logger.Info("ssh browser SSO/MFA enabled", "url_base", cfg.BrowserLoginURLBase, "jit", cfg.JITProvision)
+	} else {
+		logger.Info("ssh browser SSO/MFA disabled (SSHBROKER_SSH_LOGIN_URL_BASE unset); publickey only")
+	}
+
 	sshSrv, err := proxy.New(proxy.Config{
-		HostKeyPath:      cfg.SSHHostKeyPath,
-		Authenticator:    authn,
-		Authorizer:       authz,
-		Issuer:           issuer,
-		Auditor:          auditAdapter{st: st, logger: logger, recordingDir: cfg.RecordingDir, uploader: uploader},
-		BrokerSourceAddr: cfg.BrokerSourceAddr,
-		Logger:           logger,
-		Recorder:         recorder,
+		HostKeyPath:         cfg.SSHHostKeyPath,
+		Authenticator:       authn,
+		Authorizer:          authz,
+		Issuer:              issuer,
+		Auditor:             auditAdapter{st: st, logger: logger, recordingDir: cfg.RecordingDir, uploader: uploader},
+		BrokerSourceAddr:    cfg.BrokerSourceAddr,
+		Logger:              logger,
+		Recorder:            recorder,
+		BrowserLogin:        browserLogin,
+		BrowserLoginTimeout: cfg.BrowserLoginTimeout,
 	})
 	if err != nil {
 		return err
