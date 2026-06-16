@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/yourorg/sshbroker/internal/store"
@@ -33,6 +34,9 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	case store.IsConflict(err):
 		writeError(w, http.StatusConflict, "already exists")
 	default:
+		// Log the real error server-side (CC7.2/CC7.3) but return a generic
+		// message so internals aren't leaked to the client.
+		slog.Default().Error("unexpected store error", "err", err.Error())
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

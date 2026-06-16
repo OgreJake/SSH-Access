@@ -183,7 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/ssh-login/approve", s.requireAuth(s.sshLoginApprove))
 	mux.HandleFunc("POST /api/v1/ssh-login/deny", s.requireAuth(s.sshLoginDeny))
 
-	return s.recoverMW(s.resolvePrincipalMW(s.auditMW(mux)))
+	return s.recoverMW(s.bodyLimitMW(s.requireJSONMW(s.resolvePrincipalMW(s.auditMW(mux)))))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

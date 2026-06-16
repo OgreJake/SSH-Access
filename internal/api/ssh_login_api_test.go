@@ -34,6 +34,9 @@ func TestSSHLoginApprovalEndpoints(t *testing.T) {
 		} else {
 			req = httptest.NewRequest(method, path, nil)
 		}
+		if method != http.MethodGet {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		req.Header.Set("X-Proxy-Auth", "proxy-secret")
 		req.Header.Set("X-Auth-Request-Email", email)
 		req.Header.Set("X-Auth-Request-Groups", "sg-admins")

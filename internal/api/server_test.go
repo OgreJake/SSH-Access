@@ -65,6 +65,10 @@ func do(t *testing.T, h http.Handler, method, path, token string, body any) *htt
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		req.Header.Set("Content-Type", "application/json")
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec

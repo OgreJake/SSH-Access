@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,7 +142,16 @@ func principalDTO(p auth.Principal) map[string]any {
 	}
 }
 
+// clientIP returns the originating client IP. The API is reachable only via the
+// loopback proxy, so the left-most X-Forwarded-For entry (the real client) is
+// trusted; otherwise fall back to the connection's remote address.
 func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
 	host := r.RemoteAddr
 	if i := indexLastColon(host); i >= 0 {
 		host = host[:i]

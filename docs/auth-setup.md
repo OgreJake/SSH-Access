@@ -326,6 +326,40 @@ whitelist_domains = ["login.microsoftonline.com"]
 then redirect to
 `/oauth2/sign_out?rd=https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/logout`.
 
+## Security hardening (proxy/NGINX side)
+
+These complement the in-app controls and are expected by a SOC 2 review.
+
+**Forward the real client IP.** The API now records the client IP from
+`X-Forwarded-For` (trusted because it's loopback-only behind the proxy), so audit
+events attribute actions to the real admin rather than `127.0.0.1`. Ensure NGINX
+sets it on the `/api/` location (and the `/api/v1/auth/local/` location):
+
+```nginx
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Real-IP       $remote_addr;
+```
+
+**Constrain the oauth2-proxy cookie (CSRF).** Set in `oauth2-proxy.cfg`:
+```ini
+cookie_samesite = "lax"
+```
+The API also now requires `Content-Type: application/json` on all mutating
+requests, which blocks cross-site form CSRF; the SameSite cookie is the
+complementary control.
+
+**TLS + security headers.** Use a CA-signed cert (not self-signed), TLS 1.2/1.3
+only, and add response headers in the `server` block:
+```nginx
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+```
+
+**Scrub the SSH-login code from access logs (optional).** The one-time code rides
+in `/ssh-login?code=…`; it is single-use and short-lived, but if you want it out
+of access logs, log a sanitized request or drop the query string for that path.
+
 ## Troubleshooting
 
 - **`AADSTS650053 ... scope 'groups'`** — remove `groups` from `scope`; deliver

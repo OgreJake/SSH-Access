@@ -24,6 +24,40 @@ func principalFrom(ctx context.Context) (*auth.Principal, bool) {
 	return p, ok && p != nil
 }
 
+// maxBodyBytes caps request bodies to bound memory use (CC7.1).
+const maxBodyBytes = 1 << 20 // 1 MiB
+
+// bodyLimitMW caps the size of every request body.
+func (s *Server) bodyLimitMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireJSONMW requires application/json on state-changing methods. This blocks
+// cross-site form/simple-request CSRF (an HTML form cannot set this content
+// type, and a cross-origin fetch that does is stopped by the CORS preflight),
+// as defense in depth alongside the session cookie's SameSite attribute (M-1).
+func (s *Server) requireJSONMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			ct := r.Header.Get("Content-Type")
+			if i := strings.IndexByte(ct, ';'); i >= 0 {
+				ct = ct[:i]
+			}
+			if strings.TrimSpace(ct) != "application/json" {
+				writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // recoverMW converts handler panics into 500s.
 func (s *Server) recoverMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,15 +149,21 @@ func splitAndTrim(s, delim string) []string {
 
 // require wraps a handler so it runs only for an authenticated principal holding
 // the given permission (401 if unauthenticated, 403 if lacking the permission).
+// Authenticated-but-forbidden attempts are written to the audit log (CC7.2);
+// unauthenticated hits are logged operationally (they carry no identity and,
+// behind the proxy, should be rare — auditing them would let anonymous traffic
+// amplify DB writes).
 func (s *Server) require(perm auth.Permission, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFrom(r.Context())
 		if !ok {
+			s.logger.Warn("unauthenticated request", "method", r.Method, "path", r.URL.Path, "source_ip", clientIP(r))
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if !p.Can(perm) {
+			s.auditDenied(r, p.Subject, string(perm))
 			writeError(w, http.StatusForbidden, "forbidden: requires "+string(perm))
 			return
 		}
@@ -135,12 +175,29 @@ func (s *Server) require(perm auth.Permission, h http.HandlerFunc) http.HandlerF
 func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := principalFrom(r.Context()); !ok {
+			s.logger.Warn("unauthenticated request", "method", r.Method, "path", r.URL.Path, "source_ip", clientIP(r))
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		h(w, r)
 	}
+}
+
+// auditDenied records an authorization denial for a known principal (CC7.2).
+func (s *Server) auditDenied(r *http.Request, actor, permission string) {
+	_ = s.store.AppendAudit(r.Context(), store.AuditEvent{
+		Actor:     actor,
+		EventType: "access.denied",
+		Target:    r.URL.Path,
+		Detail: map[string]string{
+			"reason":     "forbidden",
+			"permission": permission,
+			"method":     r.Method,
+			"path":       r.URL.Path,
+			"source_ip":  clientIP(r),
+		},
+	})
 }
 
 type statusRecorder struct {

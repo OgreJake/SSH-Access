@@ -13,7 +13,9 @@ export class ApiError extends Error {
 
 async function request(method, path, body) {
   const headers = {};
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  // The API requires application/json on state-changing requests (CSRF defense),
+  // so set it on every mutating method even when there's no body.
+  if (body !== undefined || method !== 'GET') headers['Content-Type'] = 'application/json';
   const res = await fetch(path, {
     method,
     headers,

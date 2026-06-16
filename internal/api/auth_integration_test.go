@@ -34,6 +34,9 @@ func doCookie(t *testing.T, h http.Handler, method, path, cookie string, body an
 		rdr = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if cookie != "" {
 		req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: cookie})
 	}
@@ -114,6 +117,9 @@ func TestOIDCHeaderTrustAndRBAC(t *testing.T) {
 
 	withHeaders := func(method, path, secret, email, groups string, body any) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, nil)
+		if method != http.MethodGet {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		if secret != "" {
 			req.Header.Set("X-Proxy-Auth", secret)
 		}
@@ -186,5 +192,52 @@ func TestManagementAuditTrail(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected an api.post audit event for the mutation")
+	}
+}
+
+func TestForbiddenIsAudited(t *testing.T) {
+	srv, st := testAPIServer(t)
+	srv.SetAuthConfig(AuthConfig{
+		ProxySecret: "proxy-secret", GroupRoles: auth.ParseGroupRoleMapping("sg-audit:auditor"),
+		CookieSecure: false, AllowBearerToken: true,
+	})
+	h := srv.Handler()
+	// Auditor (read-only) attempts a write → 403 and an audit event.
+	req := httptest.NewRequest("POST", "/api/v1/user-groups", strings.NewReader(`{"name":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Proxy-Auth", "proxy-secret")
+	req.Header.Set("X-Auth-Request-Email", "rob@x.com")
+	req.Header.Set("X-Auth-Request-Groups", "sg-audit")
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", rec.Code)
+	}
+	events, _ := st.ListRecentAudit(context.Background(), 50)
+	var found bool
+	for _, e := range events {
+		if e.EventType == "access.denied" && e.Actor == "rob@x.com" &&
+			strings.Contains(string(e.Detail), "203.0.113.7") && strings.Contains(string(e.Detail), "groups:write") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected access.denied audit event with actor, XFF source IP, and permission")
+	}
+}
+
+func TestContentTypeRequiredOnMutations(t *testing.T) {
+	srv, _ := testAPIServer(t)
+	srv.SetAuthConfig(AuthConfig{CookieSecure: false, AllowBearerToken: true})
+	h := srv.Handler()
+	// A bearer-authed POST with a non-JSON content type is rejected (415).
+	req := httptest.NewRequest("POST", "/api/v1/user-groups", strings.NewReader("name=x"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("want 415 for non-JSON mutation, got %d (%s)", rec.Code, rec.Body)
 	}
 }
