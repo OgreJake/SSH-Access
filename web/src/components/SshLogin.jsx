@@ -21,8 +21,18 @@ export default function SshLogin() {
         setState({ phase: 'review', info });
       } catch (e) {
         if (e.status === 401) {
-          // Not signed in yet — go through SSO, then come back to this page.
-          window.location.href = '/oauth2/start?rd=' + encodeURIComponent('/ssh-login?code=' + code);
+          // Not signed in yet. oauth2-proxy lives on its own domain, returned as
+          // auth_url in the 401 body, so bounce there (not a broker-relative
+          // path). rd is the absolute approval URL so we land back here with the
+          // code after SSO; the broker origin must be in oauth2-proxy's
+          // whitelist_domains for this cross-origin redirect to be allowed.
+          const base = e.body?.auth_url || '';
+          const rd = encodeURIComponent(window.location.origin + '/ssh-login?code=' + code);
+          if (base) {
+            window.location.href = base + '/oauth2/start?rd=' + rd;
+          } else {
+            setState({ phase: 'error', msg: 'SSO is not configured (no auth_url from server).' });
+          }
           return;
         }
         if (e.status === 404) {
