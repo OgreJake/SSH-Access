@@ -78,6 +78,7 @@ func run() error {
 		AllowBearerToken:  os.Getenv("SSHBROKER_ALLOW_BEARER_TOKEN") != "", // retired by default; opt-in for emergency/cutover
 	}
 	apiSrv.SetAuthConfig(authCfg)
+	apiSrv.SetAuthURL(getenv("SSHBROKER_AUTH_URL", ""))
 	if authCfg.AllowBearerToken {
 		logger.Warn("static bearer token auth is ENABLED (SSHBROKER_ALLOW_BEARER_TOKEN) — disable once SSO/break-glass is verified")
 	}

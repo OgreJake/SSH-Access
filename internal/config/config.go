@@ -108,6 +108,12 @@ type Config struct {
 	// plaintext copy. Has no effect when upload is disabled.
 	DeleteLocalRecordingAfterUpload bool
 
+	// AuthURL is the public base URL of the oauth2-proxy auth server
+	// (e.g. https://auth.disdev.net). Returned to the SPA via the whoami
+	// endpoint so the frontend can construct SSO URLs without hardcoding
+	// the auth domain (SSHBROKER_AUTH_URL).
+	AuthURL string
+
 	// BrowserLoginURLBase, when set, enables SSH browser SSO/MFA (ADR-021): the
 	// public origin of the broker UI/API behind oauth2-proxy, used to build the
 	// approval URL (e.g. https://broker.example.com). Empty disables the flow
@@ -206,6 +212,8 @@ func Load() (*Config, error) {
 	c.AsciinemaServerURL = os.Getenv("SSHBROKER_ASCIINEMA_SERVER_URL")
 	c.AsciinemaBin = getenv("SSHBROKER_ASCIINEMA_BIN", "asciinema")
 	c.DeleteLocalRecordingAfterUpload = os.Getenv("SSHBROKER_DELETE_LOCAL_RECORDING_AFTER_UPLOAD") != "false"
+
+	c.AuthURL = os.Getenv("SSHBROKER_AUTH_URL")
 
 	c.BrowserLoginURLBase = os.Getenv("SSHBROKER_SSH_LOGIN_URL_BASE")
 	c.BrowserLoginTimeout = 2 * time.Minute

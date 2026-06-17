@@ -52,6 +52,7 @@ type Server struct {
 	recordingURLBase   string
 	authCfg            AuthConfig
 	loginLimiter       *loginLimiter
+	authURL            string // public base URL of the oauth2-proxy auth server (SSHBROKER_AUTH_URL)
 }
 
 // New constructs the API server. It fails closed: an empty token is rejected so
@@ -134,6 +135,12 @@ func (s *Server) SetRecordingDir(dir string) { s.recordingDir = dir }
 // recording path so the UI opens the recording at that origin. Empty keeps the
 // stored value as-is (resolved against the current origin).
 func (s *Server) SetRecordingURLBase(base string) { s.recordingURLBase = base }
+
+// SetAuthURL sets the public base URL of the oauth2-proxy auth server
+// (e.g. https://auth.disdev.net). It is returned to the SPA via whoami and
+// the 401 unauthenticated response so the frontend can construct SSO
+// sign-in/sign-out URLs without hardcoding the auth domain (SSHBROKER_AUTH_URL).
+func (s *Server) SetAuthURL(url string) { s.authURL = url }
 
 // Handler builds the routed, middleware-wrapped HTTP handler.
 func (s *Server) Handler() http.Handler {

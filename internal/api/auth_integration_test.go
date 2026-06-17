@@ -48,6 +48,7 @@ func doCookie(t *testing.T, h http.Handler, method, path, cookie string, body an
 func TestBreakGlassLoginWhoamiLogout(t *testing.T) {
 	srv, st := testAPIServer(t)
 	srv.SetAuthConfig(AuthConfig{CookieSecure: false, AllowBearerToken: true})
+	srv.SetAuthURL("https://auth.example.com")
 	h := srv.Handler()
 
 	hash, _ := auth.HashPassword("s3cret-pw")
@@ -67,7 +68,7 @@ func TestBreakGlassLoginWhoamiLogout(t *testing.T) {
 	}
 	cookie := sessionCookieFrom(t, rec)
 
-	// whoami via cookie shows admin identity + permissions.
+	// whoami via cookie shows admin identity + permissions + auth_url.
 	who := doCookie(t, h, "GET", "/api/v1/auth/whoami", cookie, nil)
 	if who.Code != http.StatusOK {
 		t.Fatalf("whoami: %d (%s)", who.Code, who.Body)
@@ -77,6 +78,7 @@ func TestBreakGlassLoginWhoamiLogout(t *testing.T) {
 		Source      string   `json:"source"`
 		Roles       []string `json:"roles"`
 		Permissions []string `json:"permissions"`
+		AuthURL     string   `json:"auth_url"`
 	}
 	_ = json.Unmarshal(who.Body.Bytes(), &id)
 	if id.Subject != "break-glass:root" || id.Source != "break-glass" {
@@ -84,6 +86,23 @@ func TestBreakGlassLoginWhoamiLogout(t *testing.T) {
 	}
 	if len(id.Permissions) != len(auth.AllPermissions()) {
 		t.Fatalf("admin should hold all %d permissions, got %d", len(auth.AllPermissions()), len(id.Permissions))
+	}
+	if id.AuthURL != "https://auth.example.com" {
+		t.Fatalf("whoami 200: expected auth_url %q got %q", "https://auth.example.com", id.AuthURL)
+	}
+
+	// Unauthenticated whoami → 401 body carries auth_url so SPA can build SSO link.
+	unauth := doCookie(t, h, "GET", "/api/v1/auth/whoami", "", nil)
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth whoami: got %d want 401", unauth.Code)
+	}
+	var unauthBody struct {
+		Error   string `json:"error"`
+		AuthURL string `json:"auth_url"`
+	}
+	_ = json.Unmarshal(unauth.Body.Bytes(), &unauthBody)
+	if unauthBody.AuthURL != "https://auth.example.com" {
+		t.Fatalf("whoami 401: expected auth_url %q got %q", "https://auth.example.com", unauthBody.AuthURL)
 	}
 
 	// Cookie authorizes a real mutation.

@@ -159,7 +159,7 @@ func (s *Server) require(perm auth.Permission, h http.HandlerFunc) http.HandlerF
 		if !ok {
 			s.logger.Warn("unauthenticated request", "method", r.Method, "path", r.URL.Path, "source_ip", clientIP(r))
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeErrorExtra(w, http.StatusUnauthorized, "unauthorized", map[string]any{"auth_url": s.authURL})
 			return
 		}
 		if !p.Can(perm) {
@@ -177,7 +177,7 @@ func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 		if _, ok := principalFrom(r.Context()); !ok {
 			s.logger.Warn("unauthenticated request", "method", r.Method, "path", r.URL.Path, "source_ip", clientIP(r))
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeErrorExtra(w, http.StatusUnauthorized, "unauthorized", map[string]any{"auth_url": s.authURL})
 			return
 		}
 		h(w, r)

@@ -19,6 +19,18 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// writeErrorExtra writes an error response that includes additional key/value
+// fields alongside "error". Values must be JSON-serialisable. Used by auth
+// guards to return auth_url on 401 so the SPA can construct the SSO link
+// without knowing the auth domain at build time.
+func writeErrorExtra(w http.ResponseWriter, status int, msg string, extra map[string]any) {
+	body := map[string]any{"error": msg}
+	for k, v := range extra {
+		body[k] = v
+	}
+	writeJSON(w, status, body)
+}
+
 // decode parses a JSON request body, rejecting unknown fields.
 func decode(r *http.Request, dst any) error {
 	dec := json.NewDecoder(r.Body)

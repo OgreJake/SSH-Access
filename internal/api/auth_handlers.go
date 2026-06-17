@@ -130,7 +130,9 @@ func (s *Server) localLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	writeJSON(w, http.StatusOK, principalDTO(*p))
+	dto := principalDTO(*p)
+	dto["auth_url"] = s.authURL
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func principalDTO(p auth.Principal) map[string]any {
