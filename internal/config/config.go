@@ -101,6 +101,13 @@ type Config struct {
 	// AsciinemaBin is the asciinema CLI to invoke (default "asciinema").
 	AsciinemaBin string
 
+	// DeleteLocalRecordingAfterUpload removes the local .cast file once it has
+	// been successfully uploaded to the asciinema server and its URL recorded
+	// (ADR-011). Default true: the uploaded copy on the (encrypted) asciinema
+	// volume becomes the system of record, so the broker does not retain a
+	// plaintext copy. Has no effect when upload is disabled.
+	DeleteLocalRecordingAfterUpload bool
+
 	// BrowserLoginURLBase, when set, enables SSH browser SSO/MFA (ADR-021): the
 	// public origin of the broker UI/API behind oauth2-proxy, used to build the
 	// approval URL (e.g. https://broker.example.com). Empty disables the flow
@@ -198,6 +205,7 @@ func Load() (*Config, error) {
 	c.RecordingDir = os.Getenv("SSHBROKER_RECORDING_DIR")
 	c.AsciinemaServerURL = os.Getenv("SSHBROKER_ASCIINEMA_SERVER_URL")
 	c.AsciinemaBin = getenv("SSHBROKER_ASCIINEMA_BIN", "asciinema")
+	c.DeleteLocalRecordingAfterUpload = os.Getenv("SSHBROKER_DELETE_LOCAL_RECORDING_AFTER_UPLOAD") != "false"
 
 	c.BrowserLoginURLBase = os.Getenv("SSHBROKER_SSH_LOGIN_URL_BASE")
 	c.BrowserLoginTimeout = 2 * time.Minute

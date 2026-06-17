@@ -169,7 +169,7 @@ func run() error {
 		Authenticator:       authn,
 		Authorizer:          authz,
 		Issuer:              issuer,
-		Auditor:             auditAdapter{st: st, logger: logger, recordingDir: cfg.RecordingDir, uploader: uploader},
+		Auditor:             auditAdapter{st: st, logger: logger, recordingDir: cfg.RecordingDir, uploader: uploader, deleteAfterUpload: cfg.DeleteLocalRecordingAfterUpload},
 		BrokerSourceAddr:    cfg.BrokerSourceAddr,
 		Logger:              logger,
 		Recorder:            recorder,
@@ -331,10 +331,11 @@ func runReaper(ctx context.Context, srv *proxy.Server, st *store.Store, interval
 // auditAdapter implements proxy.Auditor over the database store: it writes
 // session rows and appends to the hash-chained audit log.
 type auditAdapter struct {
-	st           *store.Store
-	logger       *slog.Logger
-	recordingDir string
-	uploader     recordingUploader // nil when upload is disabled
+	st                *store.Store
+	logger            *slog.Logger
+	recordingDir      string
+	uploader          recordingUploader // nil when upload is disabled
+	deleteAfterUpload bool
 }
 
 // uploadRecording uploads a finished .cast to the asciinema server in the
@@ -356,6 +357,15 @@ func (a auditAdapter) uploadRecording(sessionID, path string) {
 			return
 		}
 		a.logger.Info("recording uploaded", "session_id", sessionID, "url", loc, "path", recPath)
+		// Fail-closed deletion: only remove the local plaintext copy once the
+		// upload AND the URL store have both succeeded (ADR-011, H-3). On any
+		// earlier return above the file is retained so the recording is not lost
+		// and the API's local-file fallback still works.
+		if a.deleteAfterUpload {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				a.logger.Warn("delete local recording after upload", "session_id", sessionID, "err", err.Error())
+			}
+		}
 	}()
 }
 
