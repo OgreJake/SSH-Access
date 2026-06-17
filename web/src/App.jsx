@@ -30,15 +30,17 @@ export default function App() {
 }
 
 function AdminApp() {
-  const [state, setState] = useState({ status: 'loading', identity: null });
+  const [state, setState] = useState({ status: 'loading', identity: null, authUrl: '' });
   const [tab, setTab] = useState('users');
 
   async function loadIdentity() {
     try {
       const id = await api.whoami();
-      setState({ status: 'authed', identity: id });
+      setState({ status: 'authed', identity: id, authUrl: id.auth_url || '' });
     } catch (e) {
-      setState({ status: e.status === 401 ? 'anon' : 'error', identity: null, error: e.message });
+      // whoami returns 401 with a JSON body containing auth_url
+      const authUrl = e.body?.auth_url || '';
+      setState({ status: e.status === 401 ? 'anon' : 'error', identity: null, error: e.message, authUrl });
     }
   }
 
@@ -50,7 +52,7 @@ function AdminApp() {
     return <div className="gate"><div className="gate-card"><p className="muted">Loading…</p></div></div>;
   }
   if (state.status !== 'authed') {
-    return <SignIn onSignedIn={loadIdentity} error={state.status === 'error' ? state.error : null} />;
+    return <SignIn onSignedIn={loadIdentity} authUrl={state.authUrl} error={state.status === 'error' ? state.error : null} />;
   }
 
   const id = state.identity;
@@ -64,10 +66,9 @@ function AdminApp() {
   async function signOut() {
     if (id.source === 'oidc') {
       // The SSO session lives in oauth2-proxy, not the broker — clear it at the
-      // proxy's sign-out endpoint. (Federated logout from Entra itself is
-      // optional; see docs/auth-setup.md.) This is a full browser navigation,
-      // so the redirect is allowed.
-      window.location.href = '/oauth2/sign_out?rd=' + encodeURIComponent('/');
+      // proxy's sign-out endpoint. This is a full browser navigation so the
+      // redirect is allowed. auth_url comes from the API so no hardcoding needed.
+      window.location.href = state.authUrl + '/oauth2/sign_out?rd=' + encodeURIComponent(window.location.origin);
       return;
     }
     try {
@@ -114,7 +115,7 @@ function AdminApp() {
   );
 }
 
-function SignIn({ onSignedIn, error }) {
+function SignIn({ onSignedIn, authUrl, error }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -134,6 +135,10 @@ function SignIn({ onSignedIn, error }) {
     }
   }
 
+  const ssoHref = authUrl
+    ? authUrl + '/oauth2/start?rd=' + encodeURIComponent(window.location.origin)
+    : null;
+
   return (
     <div className="gate">
       <div className="gate-card">
@@ -141,9 +146,10 @@ function SignIn({ onSignedIn, error }) {
           sshbroker <span>admin</span>
         </div>
         <p className="muted">Sign in with your organization account (SSO), or use a break-glass admin.</p>
-        <a className="btn" href="/oauth2/start?rd=/">
-          Sign in with SSO
-        </a>
+        {ssoHref
+          ? <a className="btn" href={ssoHref}>Sign in with SSO</a>
+          : <button className="btn" disabled>SSO unavailable</button>
+        }
         <div className="divider">break-glass</div>
         <input
           type="text"

@@ -5,9 +5,10 @@
 // the cookie is included.
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, body) {
     super(message);
     this.status = status;
+    this.body = body || null; // parsed JSON body, if any — lets callers read e.g. e.body?.auth_url
   }
 }
 
@@ -32,7 +33,7 @@ async function request(method, path, body) {
     }
   }
   if (!res.ok) {
-    throw new ApiError((data && data.error) || res.statusText || 'request failed', res.status);
+    throw new ApiError((data && data.error) || res.statusText || 'request failed', res.status, data);
   }
   return data;
 }
