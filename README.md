@@ -213,6 +213,108 @@ oauth2-proxy/NGINX wiring.
 
 ---
 
+## Target host setup (CA trust)
+
+For a target server to accept brokered connections, it must **trust the
+broker's certificate authority**. The broker mints a short-lived user
+certificate per session, signed by its CA; the target trusts that CA's public
+key, so no permanent keys ever live on the target. (Note this is the **CA**
+public key — not the broker's SSH *host* key, which is the front-door identity
+your users verify when connecting *to* the broker.)
+
+### 1. Get the CA public key
+
+Run the broker with `-print-ca-key`, using the same CA environment variables it
+normally runs with. This works for both backends; for KMS it fetches the public
+key from KMS, so the private key is never needed.
+
+```bash
+# File backend
+SSHBROKER_CA_BACKEND=file SSHBROKER_CA_KEY_PATH=/path/to/ca_key \
+  ./bin/broker -print-ca-key
+
+# KMS backend (production) — fetches the public key from KMS via the instance role
+SSHBROKER_CA_BACKEND=kms SSHBROKER_KMS_KEY_ID=<key-id-or-arn> SSHBROKER_AWS_REGION=<region> \
+  ./bin/broker -print-ca-key
+```
+
+It prints a single `TrustedUserCAKeys`-format line, safe to distribute:
+
+```
+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY... ssh-broker-ca
+```
+
+(For a dev file CA created with `make gen-ca`, the same line is in
+`dev/ca_key.pub`.)
+
+### 2. Install it on each target
+
+As root on every host you want reachable through the broker:
+
+```bash
+# Save the CA public key (the line from step 1)
+sudo tee /etc/ssh/broker_ca.pub >/dev/null <<'EOF'
+ecdsa-sha2-nistp256 AAAAE2VjZHNh...   ssh-broker-ca
+EOF
+sudo chmod 644 /etc/ssh/broker_ca.pub
+```
+
+Add to `/etc/ssh/sshd_config` (or a drop-in in `/etc/ssh/sshd_config.d/`):
+
+```
+TrustedUserCAKeys /etc/ssh/broker_ca.pub
+```
+
+Validate and reload (reload keeps existing sessions alive):
+
+```bash
+sudo sshd -t && sudo systemctl reload ssh   # 'sshd' on some distros
+```
+
+### 3. Match the login account to the certificate principal
+
+Trusting the CA is necessary but not sufficient: `sshd` also requires the login
+account to match one of the certificate's **principals**. The broker sets the
+cert principal to the grant's login (the `deploy` in `ssh deploy+web01@broker`,
+or the account derived via ADR-019). Satisfy this one of two ways:
+
+- **Simplest** — the target account name *is* the principal. If a grant uses
+  `-login deploy`, ensure a `deploy` account exists on the host; `sshd` accepts a
+  cert whose principal equals the target username by default.
+- **Explicit mapping** (recommended at scale) — decouple principals from
+  usernames with an `AuthorizedPrincipalsFile`:
+  ```
+  AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
+  ```
+  then list the allowed principal names (one per line) in
+  `/etc/ssh/auth_principals/<account>`. This lets you audit which broker
+  principals may assume each account per host.
+
+### 4. Verify
+
+```bash
+ssh deploy+web01@broker -p 2222
+```
+
+If you get `Permission denied` *at the target* (after the broker minted a cert),
+the target's `sshd` log (`journalctl -u ssh`, or `/var/log/auth.log` with
+`LogLevel VERBOSE`) tells you which half failed:
+
+- *"no matching CA found"* → `TrustedUserCAKeys` path is wrong or `sshd` wasn't
+  reloaded.
+- *"Certificate invalid: name is not a listed principal"* → the login account
+  doesn't match a cert principal; fix the grant's `-login` or the
+  `AuthorizedPrincipalsFile`.
+
+### CA rotation
+
+When you rotate the CA (new KMS key or file key), targets keep trusting the old
+CA until `broker_ca.pub` is updated. To rotate without downtime, put **both** CA
+lines in each target's `TrustedUserCAKeys` file so old and new certs validate,
+cut the broker over, then remove the old line. Script the `-print-ca-key` →
+push-to-hosts step (Ansible, etc.) so adding a target or rotating the CA is one
+command across the fleet.
+
 ## Configuration
 
 All configuration is via `SSHBROKER_*` environment variables (see
